@@ -3903,11 +3903,7 @@ def main() -> None:
     current_page = st.session_state.get("nav_radio", "Home")
     sidebar_state = "collapsed" if current_page in ("Home", "documentation", "case-studies") else "expanded"
     
-    try:
-        from PIL import Image
-        page_icon = Image.open("logo.jpg")
-    except Exception:
-        page_icon = "🛡️"
+    page_icon = "🛡️"
 
     st.set_page_config(page_title="Argus Bid AI — Tender Audit & Compliance", page_icon=page_icon,
                        layout="wide", initial_sidebar_state=sidebar_state)
