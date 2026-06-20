@@ -3855,6 +3855,14 @@ def main() -> None:
                        layout="wide", initial_sidebar_state=sidebar_state)
     st.markdown(CSS, unsafe_allow_html=True)
     st.markdown(CUSTOM_SPINNER_CSS, unsafe_allow_html=True)
+    st.markdown("""
+    <style>
+        [data-testid="stSkeleton"], .stAppSkeleton, .stSkeleton {
+            display: none !important;
+            opacity: 0 !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
     init_state()
     
     if current_page == "Home":
