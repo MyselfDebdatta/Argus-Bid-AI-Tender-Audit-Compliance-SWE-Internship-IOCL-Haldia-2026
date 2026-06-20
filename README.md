@@ -1,6 +1,6 @@
 ---
 title: Argus Bid AI
-emoji: ??
+emoji: 🛡️
 colorFrom: blue
 colorTo: green
 sdk: streamlit
