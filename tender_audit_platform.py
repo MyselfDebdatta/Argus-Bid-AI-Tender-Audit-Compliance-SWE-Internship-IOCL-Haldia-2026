@@ -2034,7 +2034,20 @@ def format_pdf_text_to_html(text: str) -> str:
             html_out += f"<div style='padding: 6px 0; border-bottom: 1px dashed rgba(255,255,255,0.05); font-family: \"JetBrains Mono\", monospace; font-size: 13px; color: #C7D3EA; white-space: pre-wrap; word-wrap: break-word;'>{html.escape(line)}</div>"
     return html_out
 
-@st.dialog("Document Viewer", width="large")
+try:
+    dialog_decorator = st.dialog
+except AttributeError:
+    try:
+        dialog_decorator = st.experimental_dialog
+    except AttributeError:
+        # Fallback if dialog doesn't exist at all in this very old streamlit version
+        def dummy_dialog(*args, **kwargs):
+            def wrapper(func):
+                return func
+            return wrapper
+        dialog_decorator = dummy_dialog
+
+@dialog_decorator("Document Viewer", width="large")
 def view_documents_dialog(title: str, files_dict: Dict[str, str]) -> None:
     st.markdown(f"<div class='doc-viewer-marker' style='font-weight:600; font-size:16px; color:var(--blue); margin-bottom:16px;'>{html.escape(title)}</div>", unsafe_allow_html=True)
     st.markdown("""<style>
