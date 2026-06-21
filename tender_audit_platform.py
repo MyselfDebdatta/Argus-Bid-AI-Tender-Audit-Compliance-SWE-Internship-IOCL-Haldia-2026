@@ -104,7 +104,30 @@ def inject_custom_loading_screen():
                 @keyframes progress {{ 0% {{ width: 10%; left: 0; }} 100% {{ width: 40%; left: 60%; }} }}
             </style>
             <script>
-                setTimeout(() => {{ const l = document.getElementById('custom-argus-loader'); if(l) {{ l.style.opacity = '0'; l.style.visibility = 'hidden'; setTimeout(()=>l.remove(), 500); }} }}, 60000);
+                const removeLoader = () => {{
+                    const l = document.getElementById('custom-argus-loader');
+                    if(l) {{
+                        l.style.opacity = '0';
+                        l.style.visibility = 'hidden';
+                        setTimeout(()=>l.remove(), 500);
+                    }}
+                }};
+                
+                // Smart dismiss: check if Streamlit has rendered the main app container
+                let checkCount = 0;
+                const checkReady = setInterval(() => {{
+                    const app = document.querySelector('[data-testid="stAppViewContainer"]') || document.querySelector('.stApp');
+                    if (app || checkCount > 30) {{
+                        clearInterval(checkReady);
+                        // Add a slight artificial delay so it doesn't flash too fast
+                        setTimeout(removeLoader, 800); 
+                    }}
+                    checkCount++;
+                }}, 200);
+                
+                // Absolute fallback just in case
+                setTimeout(removeLoader, 8000);
+
                 const texts = ["Authenticating secure uplink...", "Loading compliance matrix...", "Calibrating NLP tensors...", "Initializing engine..."];
                 let idx = 0; setInterval(() => {{ const el = document.querySelector('.typing-text'); if(el) {{ el.innerText = texts[idx % texts.length]; idx++; }} }}, 800);
             </script>
