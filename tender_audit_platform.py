@@ -49,29 +49,47 @@ def inject_custom_loading_screen():
     try:
         import os
         import streamlit
+        import base64
+        
         streamlit_dir = os.path.dirname(streamlit.__file__)
         index_path = os.path.join(streamlit_dir, 'static', 'index.html')
         with open(index_path, 'r', encoding='utf-8') as f:
             html = f.read()
+            
+        # 1. Brutal cleanup: Restore index.html to pristine state by stripping everything between <body> and <noscript>
+        if '<body>' in html and '<noscript>' in html:
+            head_part, body_part = html.split('<body>', 1)
+            _, noscript_part = body_part.split('<noscript>', 1)
+            html = head_part + '<body>\n    <noscript>' + noscript_part
+            
+        # 2. Get Logo base64
+        logo_b64 = ""
+        if os.path.exists("logo.jpg"):
+            with open("logo.jpg", "rb") as img:
+                logo_b64 = base64.b64encode(img.read()).decode()
+                
+        img_html = f'<img style="width: 100%; height: 100%; object-fit: cover;" src="data:image/jpeg;base64,{logo_b64}">' if logo_b64 else ''
         
-        # We need to replace the old loader if it exists, or inject it if it doesn't.
-        # To do this safely, we will just clear out the old one.
-        import re
-        html = re.sub(r'<div id="custom-argus-loader".*?</div>\s*', '', html, flags=re.DOTALL)
-        
-        loader_html = """
+        # 3. Inject new loader
+        loader_html = f"""
+        <!-- ARGUS-LOADER-START -->
         <div id="custom-argus-loader" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #0B1220; z-index: 9999999; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: 'Inter', sans-serif; transition: opacity 0.4s ease-out, visibility 0.4s ease-out; overflow: hidden;">
             <div style="position: absolute; inset: 0; background-image: linear-gradient(rgba(56, 189, 248, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(56, 189, 248, 0.03) 1px, transparent 1px); background-size: 30px 30px; z-index: 0;"></div>
             <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 300px; height: 300px; background: rgba(56, 189, 248, 0.1); filter: blur(80px); border-radius: 50%; z-index: 0; animation: pulseGlow 4s infinite alternate;"></div>
+            
             <div style="position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center;">
-                <div style="position: relative; width: 100px; height: 100px; display: flex; align-items: center; justify-content: center; margin-bottom: 30px;">
-                    <div style="position: absolute; inset: 0; border-radius: 50%; border: 2px dashed rgba(56, 189, 248, 0.3); animation: spin 8s linear infinite;"></div>
-                    <div style="position: absolute; inset: 10px; border-radius: 50%; padding: 2px; background: conic-gradient(from 0deg, transparent 0%, #38BDF8 50%, transparent 100%); animation: spin 2s linear infinite;">
-                        <div style="width: 100%; height: 100%; background: #0B1220; border-radius: 50%;"></div>
+                
+                <div style="position: relative; width: 120px; height: 120px; display: flex; align-items: center; justify-content: center; margin-bottom: 40px; transform: scale(1.1);">
+                    <div style="position: absolute; inset: 0; border-radius: 36px; padding: 3px; background: conic-gradient(from 0deg, #38BDF8, rgba(56,189,248,0.05) 25%, #10B981, rgba(16,185,129,0.05) 75%, #38BDF8); animation: spin 5s linear infinite; box-shadow: 0 0 60px rgba(56, 189, 248, 0.4), inset 0 0 20px rgba(16, 185, 129, 0.2);">
+                        <div style="position: absolute; inset: 3px; background: #0B1220; border-radius: 33px; z-index: 1;"></div>
                     </div>
-                    <div style="position: absolute; inset: 22px; border-radius: 50%; border: 2px solid rgba(16, 185, 129, 0.2); border-bottom-color: #10B981; animation: spin 1.5s cubic-bezier(0.68, -0.55, 0.265, 1.55) infinite reverse;"></div>
-                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#E2E8F0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position: relative; z-index: 2; filter: drop-shadow(0 0 8px rgba(255,255,255,0.4)); animation: pulse 2s infinite;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                    <div style="position: absolute; inset: -20px; border-radius: 46px; border: 1px dashed rgba(56, 189, 248, 0.3); animation: spin 15s linear infinite reverse; z-index: 0;"></div>
+                    <div style="position: absolute; inset: -10px; border-radius: 40px; border: 1px solid rgba(16, 185, 129, 0.2); animation: spin 10s linear infinite; z-index: 0;"></div>
+                    <div style="position: relative; z-index: 2; width: 94%; height: 94%; border-radius: 28px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #0F172A; box-shadow: inset 0 0 40px rgba(0,0,0,0.8);">
+                        {img_html}
+                    </div>
                 </div>
+                
                 <h2 style="margin: 0 0 12px 0; font-size: 28px; font-weight: 800; letter-spacing: -0.5px; background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%); -webkit-background-clip: text; color: transparent;">Argus Bid AI</h2>
                 <div style="width: 200px; height: 4px; background: rgba(255,255,255,0.05); border-radius: 4px; overflow: hidden; margin-bottom: 12px; position: relative;">
                     <div style="position: absolute; top:0; left:0; height: 100%; width: 50%; background: linear-gradient(90deg, #38BDF8, #10B981); border-radius: 4px; animation: progress 2s ease-in-out infinite alternate;"></div>
@@ -81,17 +99,17 @@ def inject_custom_loading_screen():
                 </p>
             </div>
             <style>
-                @keyframes spin { 100% { transform: rotate(360deg); } }
-                @keyframes pulseGlow { 0% { opacity: 0.5; transform: translate(-50%, -50%) scale(0.8); } 100% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); } }
-                @keyframes progress { 0% { width: 10%; left: 0; } 100% { width: 40%; left: 60%; } }
-                @keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0.8; } 50% { transform: scale(1.1); opacity: 1; } }
+                @keyframes spin {{ 100% {{ transform: rotate(360deg); }} }}
+                @keyframes pulseGlow {{ 0% {{ opacity: 0.5; transform: translate(-50%, -50%) scale(0.8); }} 100% {{ opacity: 1; transform: translate(-50%, -50%) scale(1.1); }} }}
+                @keyframes progress {{ 0% {{ width: 10%; left: 0; }} 100% {{ width: 40%; left: 60%; }} }}
             </style>
             <script>
-                setTimeout(() => { const l = document.getElementById('custom-argus-loader'); if(l) { l.style.opacity = '0'; l.style.visibility = 'hidden'; setTimeout(()=>l.remove(), 500); } }, 10000);
+                setTimeout(() => {{ const l = document.getElementById('custom-argus-loader'); if(l) {{ l.style.opacity = '0'; l.style.visibility = 'hidden'; setTimeout(()=>l.remove(), 500); }} }}, 10000);
                 const texts = ["Authenticating secure uplink...", "Loading compliance matrix...", "Calibrating NLP tensors...", "Initializing engine..."];
-                let idx = 0; setInterval(() => { const el = document.querySelector('.typing-text'); if(el) { el.innerText = texts[idx % texts.length]; idx++; } }, 800);
+                let idx = 0; setInterval(() => {{ const el = document.querySelector('.typing-text'); if(el) {{ el.innerText = texts[idx % texts.length]; idx++; }} }}, 800);
             </script>
         </div>
+        <!-- ARGUS-LOADER-END -->
         """
         html = html.replace('<body>', f'<body>\n{loader_html}')
         with open(index_path, 'w', encoding='utf-8') as f:
@@ -100,6 +118,7 @@ def inject_custom_loading_screen():
         pass
 
 inject_custom_loading_screen()
+
 
 
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
