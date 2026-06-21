@@ -1331,6 +1331,21 @@ html, body, [class*="css"]  { font-family:'Inter',system-ui,sans-serif; }
     90% { opacity: 1; width: 480px; border-right-color: transparent; }
     100% { opacity: 0; width: 480px; border-right-color: transparent; }
 }
+
+@media (max-width: 768px) {
+    .fancy-logo-wrapper { width: 220px; height: 220px; margin-bottom: 20px; }
+    .anim-title { font-size: 20px; text-align: center; padding: 0 16px; margin: 0 0 12px 0; }
+    .anim-tagline { font-size: 11px; }
+    @keyframes typewriter {
+        0% { opacity: 0; width: 0; border-right-color: transparent; }
+        25% { opacity: 0; width: 0; border-right-color: transparent; }
+        30% { opacity: 1; width: 0; border-right-color: #60A5FA; }
+        55% { opacity: 1; width: 280px; border-right-color: #60A5FA; }
+        80% { opacity: 1; width: 280px; border-right-color: transparent; }
+        90% { opacity: 1; width: 280px; border-right-color: transparent; }
+        100% { opacity: 0; width: 280px; border-right-color: transparent; }
+    }
+}
 .masthead h1 { font-size: 32px; font-weight: 900; letter-spacing: -0.5px; margin: 0; background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%); -webkit-background-clip: text; color: transparent; line-height: 1.2; z-index: 2; position: relative; }
 .masthead .sub { color: #94A3B8; font-size: 15px; font-weight: 600; margin-top: 8px; letter-spacing: 0.5px; z-index: 2; position: relative; }
 .engine-features {
