@@ -2,7 +2,7 @@
 echo ==================================================
 echo Installing Dependencies...
 echo ==================================================
-pip install -r requirements.txt
+pip install -q -r requirements.txt >nul 2>&1
 echo.
 echo ==================================================
 echo Starting Sentinel Tender Audit Platform...
