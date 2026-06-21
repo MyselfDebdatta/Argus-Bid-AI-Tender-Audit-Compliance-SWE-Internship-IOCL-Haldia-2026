@@ -4078,13 +4078,6 @@ def main() -> None:
             display: none !important;
             opacity: 0 !important;
         }
-        /* Instantly hide the custom loader once Streamlit renders the Python layout */
-        #custom-argus-loader {
-            opacity: 0 !important;
-            visibility: hidden !important;
-            pointer-events: none !important;
-            transition: opacity 0.4s ease-out, visibility 0.4s ease-out !important;
-        }
     </style>
     """, unsafe_allow_html=True)
     init_state()
@@ -4207,6 +4200,17 @@ def main() -> None:
     eyebrow("04", "Vendor Audit Deep-Dive")
     render_drawers(ss.results)
 
+    # Hide the custom loader if it exists
+    st.components.v1.html("""
+    <script>
+        const loader = window.parent.document.getElementById('custom-argus-loader');
+        if (loader) {
+            loader.style.opacity = '0';
+            loader.style.visibility = 'hidden';
+            setTimeout(() => loader.remove(), 600);
+        }
+    </script>
+    """, height=0, width=0)
+
 if __name__ == "__main__":
     main()
-
