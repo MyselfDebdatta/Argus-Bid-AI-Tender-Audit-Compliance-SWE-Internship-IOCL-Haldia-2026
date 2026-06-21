@@ -3125,13 +3125,6 @@ def render_landing_page() -> None:
             transform: scale(0.75);
             transform-origin: center;
         }}
-        .cta-row {{
-            flex-direction: column !important;
-        }}
-        .cta-row a {{
-            width: 100% !important;
-            margin-bottom: 8px;
-        }}
         .lp-grid {{
             grid-template-columns: 1fr !important;
         }}
