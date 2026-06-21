@@ -3382,7 +3382,24 @@ We then parse every vendor's submission, intelligently classifying documents, ex
 }}
 @media (max-width: 1024px) {{
     .footer-grid-container {{
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)) !important;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)) !important;
+    }}
+}}
+@media (max-width: 768px) {{
+    .footer-grid-container {{
+        grid-template-columns: 1fr 1fr !important;
+        gap: 30px 16px !important;
+    }}
+    .footer-grid-container > div:nth-child(1),
+    .footer-grid-container > div:nth-child(2),
+    .footer-grid-container > div:nth-child(3) {{
+        grid-column: 1 / -1;
+    }}
+    .footer-grid-container > div:nth-child(4) {{
+        grid-column: 1 / 2;
+    }}
+    .footer-grid-container > div:nth-child(5) {{
+        grid-column: 2 / 3;
     }}
 }}
 </style>
