@@ -104,7 +104,7 @@ def inject_custom_loading_screen():
                 @keyframes progress {{ 0% {{ width: 10%; left: 0; }} 100% {{ width: 40%; left: 60%; }} }}
             </style>
             <script>
-                setTimeout(() => {{ const l = document.getElementById('custom-argus-loader'); if(l) {{ l.style.opacity = '0'; l.style.visibility = 'hidden'; setTimeout(()=>l.remove(), 500); }} }}, 10000);
+                setTimeout(() => {{ const l = document.getElementById('custom-argus-loader'); if(l) {{ l.style.opacity = '0'; l.style.visibility = 'hidden'; setTimeout(()=>l.remove(), 500); }} }}, 60000);
                 const texts = ["Authenticating secure uplink...", "Loading compliance matrix...", "Calibrating NLP tensors...", "Initializing engine..."];
                 let idx = 0; setInterval(() => {{ const el = document.querySelector('.typing-text'); if(el) {{ el.innerText = texts[idx % texts.length]; idx++; }} }}, 800);
             </script>
@@ -364,6 +364,16 @@ def extract_text_from_pdf_bytes(data: bytes) -> Tuple[str, Optional[str]]:
     text = ""
     last_error: Optional[str] = None
 
+    if HAS_PYPDF:
+        try:
+            reader = PdfReader(io.BytesIO(data))
+            pages = [(p.extract_text() or "") for p in reader.pages]
+            text = "\n".join(pages).strip()
+            if text:
+                return text, None
+        except Exception as exc:  # pragma: no cover
+            last_error = f"pypdf failed: {exc}"
+
     if HAS_PDFPLUMBER:
         try:
             with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -375,16 +385,6 @@ def extract_text_from_pdf_bytes(data: bytes) -> Tuple[str, Optional[str]]:
                 return text, None
         except Exception as exc:  # pragma: no cover
             last_error = f"pdfplumber failed: {exc}"
-
-    if HAS_PYPDF:
-        try:
-            reader = PdfReader(io.BytesIO(data))
-            pages = [(p.extract_text() or "") for p in reader.pages]
-            text = "\n".join(pages).strip()
-            if text:
-                return text, None
-        except Exception as exc:  # pragma: no cover
-            last_error = f"pypdf failed: {exc}"
 
     if not text:
         return "", last_error or "No text could be extracted (scanned image / empty PDF)."
