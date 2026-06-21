@@ -113,20 +113,20 @@ def inject_custom_loading_screen():
                     }}
                 }};
                 
-                // Smart dismiss: check if Streamlit has rendered the main app container
+                // Smart dismiss: Wait until Streamlit has rendered actual Python components
                 let checkCount = 0;
                 const checkReady = setInterval(() => {{
-                    const app = document.querySelector('[data-testid="stAppViewContainer"]') || document.querySelector('.stApp');
-                    if (app || checkCount > 30) {{
+                    const elements = document.querySelectorAll('.element-container');
+                    // We check if at least 3 elements are rendered to ensure the UI is fully painted
+                    if ((elements && elements.length > 3) || checkCount > 60) {{
                         clearInterval(checkReady);
-                        // Add a slight artificial delay so it doesn't flash too fast
-                        setTimeout(removeLoader, 800); 
+                        setTimeout(removeLoader, 300); // Tiny delay to let browser paint
                     }}
                     checkCount++;
-                }}, 200);
+                }}, 250);
                 
-                // Absolute fallback just in case
-                setTimeout(removeLoader, 8000);
+                // Absolute fallback (15 seconds)
+                setTimeout(removeLoader, 15000);
 
                 const texts = ["Authenticating secure uplink...", "Loading compliance matrix...", "Calibrating NLP tensors...", "Initializing engine..."];
                 let idx = 0; setInterval(() => {{ const el = document.querySelector('.typing-text'); if(el) {{ el.innerText = texts[idx % texts.length]; idx++; }} }}, 800);
@@ -4098,9 +4098,14 @@ def main() -> None:
     st.markdown(CUSTOM_SPINNER_CSS, unsafe_allow_html=True)
     st.markdown("""
     <style>
-        [data-testid="stSkeleton"], .stAppSkeleton, .stSkeleton {
+        div[data-testid^="stSkeleton"],
+        [data-testid="stAppSkeleton"],
+        [data-testid="stSkeleton"], 
+        .stAppSkeleton, 
+        .stSkeleton {
             display: none !important;
             opacity: 0 !important;
+            visibility: hidden !important;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -4241,17 +4246,6 @@ def main() -> None:
     eyebrow("04", "Vendor Audit Deep-Dive")
     render_drawers(ss.results)
 
-    # Hide the custom loader if it exists
-    st.components.v1.html("""
-    <script>
-        const loader = window.parent.document.getElementById('custom-argus-loader');
-        if (loader) {
-            loader.style.opacity = '0';
-            loader.style.visibility = 'hidden';
-            setTimeout(() => loader.remove(), 600);
-        }
-    </script>
-    """, height=0, width=0)
 
 if __name__ == "__main__":
     main()
