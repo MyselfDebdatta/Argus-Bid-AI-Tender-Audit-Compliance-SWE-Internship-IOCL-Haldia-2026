@@ -1409,7 +1409,6 @@ html, body, [class*="css"]  { font-family:'Inter',system-ui,sans-serif; }
 }
 
 @media (max-width: 768px) {
-    [data-testid="stSidebar"] { min-width: 100vw !important; max-width: 100vw !important; }
     .fancy-logo-wrapper { width: 220px; height: 220px; margin-bottom: 20px; }
     .anim-title { font-size: 20px; text-align: center; padding: 0 16px; margin: 0 0 12px 0; }
     .anim-tagline { font-size: 11px; }
@@ -1566,7 +1565,7 @@ html, body, [class*="css"]  { font-family:'Inter',system-ui,sans-serif; }
 .glass-panel summary::after {
     content: ''; margin-left: auto; width: 18px; height: 18px;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-    background-size: cover; transition: transform 0.2s;
+    background-size: cover; transition: transform 0.2s; flex-shrink: 0; margin-left: 16px;
 }
 .glass-panel[open] summary::after { transform: rotate(180deg); }
 .glass-panel[open] summary { border-bottom: 1px solid rgba(255,255,255,0.06); }
@@ -4178,12 +4177,19 @@ def main() -> None:
         components.html("""
             <script>
                 if (window.innerWidth <= 768) {
-                    const btn = window.parent.document.querySelector('[data-testid="stSidebarCollapseButton"]') || 
-                                window.parent.document.querySelector('button[kind="headerNoPadding"]');
-                    if (btn) btn.click();
+                    // Try simulating escape key
+                    window.parent.document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+                    // Also try clicking the first icon button in the sidebar
+                    const sidebar = window.parent.document.querySelector('[data-testid="stSidebar"]');
+                    if (sidebar) {
+                        const buttons = sidebar.querySelectorAll('button');
+                        if (buttons.length > 0) buttons[0].click();
+                    }
                 }
             </script>
         """, height=0)
+        import time
+        time.sleep(0.5) # Give the frontend a moment to process the closing animation
         run_audit(api_key, model)
 
     ss = st.session_state
