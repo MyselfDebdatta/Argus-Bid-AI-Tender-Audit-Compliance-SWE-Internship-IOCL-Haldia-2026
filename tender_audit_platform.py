@@ -1346,7 +1346,7 @@ html, body, [class*="css"]  { font-family:'Inter',system-ui,sans-serif; }
         100% { opacity: 0; width: 280px; border-right-color: transparent; }
     }
     .kpis { flex-wrap: wrap; }
-    .kpi { flex: 1 1 40%; padding: 16px 12px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .kpi { flex: 1 1 50%; min-width: 50%; padding: 16px 12px; box-sizing: border-box; border-bottom: 1px solid rgba(255,255,255,0.04); }
     .kpi:nth-child(even) { border-right: none; }
     .kpi:last-child { border-bottom: none; border-right: none; }
     .kpi .v { font-size: 26px; }
