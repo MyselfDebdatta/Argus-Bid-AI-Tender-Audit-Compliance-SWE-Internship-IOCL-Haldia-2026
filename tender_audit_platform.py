@@ -1409,6 +1409,7 @@ html, body, [class*="css"]  { font-family:'Inter',system-ui,sans-serif; }
 }
 
 @media (max-width: 768px) {
+    [data-testid="stSidebar"] { min-width: 100vw !important; max-width: 100vw !important; }
     .fancy-logo-wrapper { width: 220px; height: 220px; margin-bottom: 20px; }
     .anim-title { font-size: 20px; text-align: center; padding: 0 16px; margin: 0 0 12px 0; }
     .anim-tagline { font-size: 11px; }
@@ -1570,6 +1571,7 @@ html, body, [class*="css"]  { font-family:'Inter',system-ui,sans-serif; }
 .glass-panel[open] summary::after { transform: rotate(180deg); }
 .glass-panel[open] summary { border-bottom: 1px solid rgba(255,255,255,0.06); }
 .glass-panel .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; padding: 20px; }
+@media (max-width: 768px) { .glass-panel .grid-2 { grid-template-columns: 1fr; } }
 
 /* ---- st.expander overrides ---- */
 [data-testid="stExpander"] details {
@@ -1702,7 +1704,7 @@ html, body, [class*="css"]  { font-family:'Inter',system-ui,sans-serif; }
 .sh-box svg { margin-right: 12px; opacity: 0.9; flex-shrink: 0; }
 .sh-box span.title {
     font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px;
-    white-space: nowrap;
+    white-space: normal; line-height: 1.4; padding-right: 12px;
 }
 .sh-box span.line {
     flex-grow: 1; height: 1px; margin-left: 16px;
@@ -4172,6 +4174,16 @@ def main() -> None:
     render_masthead()
 
     if run_clicked:
+        import streamlit.components.v1 as components
+        components.html("""
+            <script>
+                if (window.innerWidth <= 768) {
+                    const btn = window.parent.document.querySelector('[data-testid="stSidebarCollapseButton"]') || 
+                                window.parent.document.querySelector('button[kind="headerNoPadding"]');
+                    if (btn) btn.click();
+                }
+            </script>
+        """, height=0)
         run_audit(api_key, model)
 
     ss = st.session_state
