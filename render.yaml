@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: sentinel-tender-audit
+    name: argus-bid-ai
     env: python
     region: oregon
     plan: free
