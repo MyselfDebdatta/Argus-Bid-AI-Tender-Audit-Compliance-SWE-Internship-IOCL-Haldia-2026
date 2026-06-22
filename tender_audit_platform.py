@@ -533,6 +533,21 @@ class AuditEngine:
         # Implementation moved to RAGAuditEngine
         pass
 
+    @staticmethod
+    def assess_readability(text: str, error_info: str = None) -> str:
+        if error_info:
+            if "Decryption failed" in error_info:
+                return "Encrypted / Password Protected"
+            return "Corrupted"
+        if not text or not text.strip():
+            return "Unreadable (Blank / Scanned Image)"
+        
+        spaces = text.count(' ')
+        total = len(text)
+        if total > 100 and (spaces / total) < 0.05:
+            return "Partially Readable (Low-Quality Warning)"
+        return "Readable (Passed OCR)"
+
     # ---- document classification ---------------------------------------
     def classify_document(self, filename: str, text: str) -> str: return "Unclassified Document"
     def validate_maf(self, inventory: List[InventoryItem], files: Dict[str, str], tender_id: str) -> MAFResult: return MAFResult(status=MAF_MISSING, evidence="Engine fallback")
