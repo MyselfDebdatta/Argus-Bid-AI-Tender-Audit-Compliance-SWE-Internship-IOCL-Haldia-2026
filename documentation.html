@@ -375,12 +375,9 @@ score          = mandatory_part + preferred_part   <span class="c"># disqualifie
     <p>Every compliance verdict is produced by a rule-based engine. The same inputs always yield the same
     verdict, and each verdict carries the bid section and evidence behind it. That reproducibility is what
     survives an audit or a vendor challenge.</p></div>
-    <div class="card tip"><h4>The AI layer — optional</h4>
-    <p>An optional language-model layer does two things only: it re-classifies documents the rules could
-    not confidently type, and it writes the executive narrative summary. It never overrides a verdict. If
-    no key is supplied, or the call fails, the audit runs identically on rules alone — so a live demo
-    cannot break.</p></div>
-    <p>In short: turning the AI off changes the prose, never the decision.</p>
+    <div class="card tip"><h4>The Local AI layer (Ollama)</h4>
+    <p>A locally-hosted language-model layer (Llama 3) handles semantic extraction, re-classifies documents the rules could
+    not confidently type, and writes the executive narrative summary. It runs entirely on your local machine, ensuring 100% data privacy. It never overrides a deterministic verdict.</p></div>
 
     <h2 id="upload"><span class="num">05</span>Uploading documents</h2>
     <p>Supported formats are <code class="inl">.pdf</code>, <code class="inl">.txt</code>, and
@@ -396,10 +393,9 @@ score          = mandatory_part + preferred_part   <span class="c"># disqualifie
     <h2 id="running"><span class="num">06</span>Running the app</h2>
     <p>The platform ships in two forms that share the same engine and the same verdicts.</p>
     <h3>Streamlit application</h3>
-    <pre><span class="k">pip install</span> streamlit pdfplumber pypdf anthropic
+    <pre><span class="k">pip install</span> -r requirements.txt
 <span class="k">streamlit run</span> tender_audit_platform.py</pre>
-    <p>Then use the sidebar to load the demo or upload your own documents. The optional Claude API key
-    goes in the <b>LLM Augmentation</b> panel; leave it empty to run rule-only.</p>
+    <p>Then use the sidebar to load the demo or upload your own documents. Ensure Ollama is running locally with the <code>llama3</code> model downloaded.</p>
     <h3>Showcase website</h3>
     <p>The static Argus Bid AI showcase runs the full demo audit in the browser
     with no install — open it directly. It is the page to show people; the Streamlit app is the one that
@@ -422,8 +418,8 @@ score          = mandatory_part + preferred_part   <span class="c"># disqualifie
 
     <h2 id="faq"><span class="num">08</span>FAQ</h2>
     <h3>Does the AI make the final decision?</h3>
-    <p>No. The rule engine makes every verdict. The AI only re-types ambiguous documents and writes the
-    summary narrative, and can be switched off entirely without changing any result.</p>
+    <p>No. The deterministic rule engine makes every compliance verdict. The AI dynamically parses the Master BID requirements, categorizes ambiguous documents, and writes the
+    summary narrative, but never overrides a mathematical or logical rule.</p>
     <h3>Why was a vendor with strong specs still disqualified?</h3>
     <p>Eligibility comes before merit. A missing mandatory document, a failed pre-qualification, or a
     missing/invalid MAF disqualifies regardless of how good the technical bid is. The disqualification log

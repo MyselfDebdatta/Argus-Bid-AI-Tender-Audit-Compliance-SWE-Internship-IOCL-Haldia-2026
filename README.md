@@ -6,7 +6,7 @@
 
 ![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)
 ![Streamlit](https://img.shields.io/badge/Streamlit-%23FE4B4B.svg?style=for-the-badge&logo=streamlit&logoColor=white)
-![Anthropic](https://img.shields.io/badge/Anthropic-%23D8A388.svg?style=for-the-badge&logo=anthropic&logoColor=black)
+![Ollama](https://img.shields.io/badge/Ollama-%23000000.svg?style=for-the-badge&logo=ollama&logoColor=white)
 ![Render](https://img.shields.io/badge/Render-%2346E3B7.svg?style=for-the-badge&logo=render&logoColor=white)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
@@ -48,7 +48,7 @@ Argus Bid AI transforms procurement from a manual chore into an instant, determi
 ### ✨ Tech Innovations
 - **Deterministic Rule Engine:** Unlike generative AI that hallucinate, Argus Bid AI relies on strict logic to evaluate pass/fail compliance.
 - **Explainable Audit Trails (XAI):** Every single decision, rank, or disqualification is backed by a legally defensible, traceable text snippet.
-- **LLM Augmentation:** Anthropic's API is used carefully for complex semantic classification and executive summarization, but never for the final compliance verdict.
+- **Local RAG Augmentation:** Powered by a locally-hosted Ollama (Llama 3) engine and ChromaDB vector store for highly secure, air-gapped semantic document classification and executive summarization.
 - **Dynamic Multi-modal OCR:** Extracts text and tables effortlessly.
 
 ### 🧩 Core Product Modules
@@ -57,22 +57,20 @@ Argus Bid AI transforms procurement from a manual chore into an instant, determi
 - **Interactive Dashboard:** A premium, glassmorphic UI for uploading documents, running audits, and viewing explainable results.
 - **Exportable Reports:** Instantly export the entire dashboard analysis as a physical or PDF report for stakeholder review.
 
-### 🤖 The LLM Augmentation (Optional)
+### 🤖 Local RAG Engine (Ollama & Llama 3)
 
-The LLM Augmentation is a very specific architectural choice for the Argus Bid AI platform.
+The AI augmentation in Argus Bid AI is fully local and runs entirely on your machine. This ensures strict compliance with public sector data privacy standards (zero data leaves your system).
 
-The entire core of the Argus platform is built to be **100% deterministic and rule-based**. This means when evaluating critical compliance rules (like checking revenue numbers, dates, or missing signatures), it uses strict programmatic logic, not AI. This prevents "AI hallucinations" and ensures that if a vendor fails, the reason is legally auditable and mathematically absolute.
+The platform uses a sophisticated Retrieval-Augmented Generation (RAG) pipeline powered by ChromaDB to do three key things:
 
-However, if you choose to provide an API key and enable the LLM Augmentation, the platform activates an AI assistant that runs alongside the deterministic engine to do exactly two things:
+#### 1. Dynamic Master BID Parsing
+Instead of relying on fragile exact-match searches, the engine uses multi-vector semantic search (with `k=20`) to dynamically parse your Master BID. It autonomously identifies every mandatory document, technical specification, and pre-qualification criteria from documents of any length.
 
-#### 1. Smart Fallback for Messy Documents
-Sometimes vendors upload documents that are incredibly poorly formatted, blurry, or strangely named, making it hard for the strict rules to figure out exactly what the document is (e.g., "Is this an MAF or just a general brochure?"). If the strict engine gets confused, it quietly passes the text to the LLM. The LLM acts as a "smart backup" to read the document contextually and classify it correctly so the deterministic engine can grade it.
+#### 2. Smart Fallback for Messy Documents
+Vendors often upload documents that are poorly formatted, blurry, or strangely named. The platform uses Llama 3 as a "smart backup" to read the context of the document and correctly label it, ensuring it doesn't fail a vendor just because they named their authorization form "Scan_001.pdf".
 
-#### 2. Generating the Executive Summary Narrative
-After the platform has mathematically ranked the vendors, the raw data can be quite dense. If the LLM is enabled, the platform feeds all the final pass/fail results into the AI and asks it to write a clean, human-readable "Executive Narrative." It essentially writes your final summary report for you, explaining exactly why Vendor 1 beat Vendor 2 in plain English.
-
-> **⚠️ The Most Important Rule:**  
-> The LLM never overrides a verdict. The AI is strictly walled off from making any actual compliance decisions. If you leave the LLM turned off, or don't provide an API key, the core audit still runs perfectly and identically—you just won't get the generated executive summary paragraph at the end.
+#### 3. Generating the Executive Summary Narrative
+After the platform has mathematically ranked the vendors, it feeds the results into the local Llama 3 model to generate a clean, human-readable "Executive Narrative." It essentially writes the final summary report for you in plain English.
 
 ---
 
@@ -92,7 +90,7 @@ After the platform has mathematically ranked the vendors, the raw data can be qu
 | **Frontend & UI** | Streamlit | High-performance, pure-Python UI framework. |
 | | Custom CSS/JS | Premium glassmorphic styling, animations, and dynamic DOM manipulation. |
 | **Backend Logic** | Python 3.11 | Core logic, data processing, and document handling. |
-| **AI & NLP** | Anthropic API | Used for semantic document classification and executive summarization. |
+| **AI & NLP** | Ollama, Llama 3, ChromaDB | 100% local semantic document classification, vector search, and executive summarization. |
 | **Document Processing**| pdfplumber & pypdf | Robust text extraction from complex PDFs. |
 | **Deployment** | Render | Native Python Web Service for secure, iframe-free hosting. |
 
@@ -101,7 +99,7 @@ After the platform has mathematically ranked the vendors, the raw data can be qu
 ## 🏗️ Architecture (High Level)
 Argus Bid AI follows a streamlined, single-tier architecture optimized for data processing:
 1. **Presentation Layer:** A dynamic Streamlit frontend enhanced with custom HTML/JS/CSS for a premium user experience.
-2. **Processing Layer:** Python backend that orchestrates file parsing, text extraction, and calls the Anthropic API for NLP tasks.
+2. **Processing Layer:** Python backend that orchestrates file parsing, chunking, embedding, and calls the local Ollama LLM for NLP tasks.
 3. **Evaluation Layer:** The deterministic rule engine that applies extracted Master BID constraints to Vendor text arrays, generating the XAI scoring matrix.
 
 ---
@@ -125,7 +123,7 @@ Argus-Bid-AI/
 ### Prerequisites
 - [Python 3.8+](https://www.python.org/)
 - [Git](https://git-scm.com/)
-- An Anthropic API Key (Optional, for LLM features)
+- Local installation of [Ollama](https://ollama.com/) with the 'llama3' model downloaded.
 
 ### 1. Clone the Repository
 ```bash
@@ -148,8 +146,7 @@ The application will be accessible at `http://localhost:8501`.
 ---
 
 ## 🔒 Security Notes
-- **API Keys:** You can input your Anthropic API key securely through the application sidebar. It is never stored permanently on the server.
-- **Data Privacy:** All document parsing and deterministic auditing is done in-memory. Uploaded sensitive tender documents are not persisted to a public database.
+- **Data Privacy:** Because the AI runs strictly locally via Ollama, zero data is ever transmitted to the cloud. All document parsing and deterministic auditing is done in-memory on your local machine.
 
 ---
 

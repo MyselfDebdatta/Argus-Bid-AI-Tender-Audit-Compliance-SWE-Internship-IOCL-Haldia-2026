@@ -163,12 +163,7 @@ try:
 except Exception:  # pragma: no cover
     HAS_PYPDF = False
 
-try:
-    import anthropic  # type: ignore
-
-    HAS_ANTHROPIC = True
-except Exception:  # pragma: no cover
-    HAS_ANTHROPIC = False
+# Removed Anthropic, using local RAG engine instead.
 
 
 # ===========================================================================
@@ -187,23 +182,7 @@ READ_PASS = "Readable (Passed OCR)"
 READ_LOW = "Partially Readable (Low-Quality Warning)"
 READ_CORRUPT = "Corrupted / Unreadable"
 
-# Document taxonomy used by the classifier.
-DOC_TYPES = [
-    "Manufacturer's Authorization Form (MAF)",
-    "Technical Datasheet / Bid",
-    "Commercial / Price Bid",
-    "PAN Card",
-    "GST Registration",
-    "GeM Registration",
-    "Audited Balance Sheet",
-    "Experience / Past Performance Certificate",
-    "Company Registration",
-    "Deviation Statement",
-    "GeM Contract / Agreement",
-    "Master BID Document",
-    "Affidavit / Undertaking",
-    "Unclassified Document",
-]
+# Document taxonomy removed - classification is now fully dynamic via LLM.
 
 
 # ===========================================================================
@@ -377,41 +356,41 @@ MOCK_VENDORS: Dict[str, Dict[str, str]] = {
 # ===========================================================================
 # SECTION 3 — PDF / FILE TEXT EXTRACTION (with graceful fallback)
 # ===========================================================================
-def extract_text_from_pdf_bytes(data: bytes) -> Tuple[str, Optional[str]]:
+def extract_text_from_pdf_bytes(data: bytes) -> Tuple[str, Optional[str], List[str]]:
     """Extract text from raw PDF bytes.
 
-    Returns (text, error). Tries pdfplumber, then pypdf. Any failure is caught
+    Returns (text, error, list_of_page_texts). Tries pdfplumber, then pypdf. Any failure is caught
     and reported rather than raised, so a single malformed file never aborts the
     whole batch.
     """
     text = ""
     last_error: Optional[str] = None
+    pages_text: List[str] = []
 
     if HAS_PYPDF:
         try:
             reader = PdfReader(io.BytesIO(data))
-            pages = [(p.extract_text() or "") for p in reader.pages]
-            text = "\n".join(pages).strip()
+            pages_text = [(p.extract_text() or "") for p in reader.pages]
+            text = "\n".join(pages_text).strip()
             if text:
-                return text, None
+                return text, None, pages_text
         except Exception as exc:  # pragma: no cover
             last_error = f"pypdf failed: {exc}"
 
     if HAS_PDFPLUMBER:
         try:
             with pdfplumber.open(io.BytesIO(data)) as pdf:
-                pages = []
                 for page in pdf.pages:
-                    pages.append(page.extract_text() or "")
-                text = "\n".join(pages).strip()
+                    pages_text.append(page.extract_text() or "")
+                text = "\n".join(pages_text).strip()
             if text:
-                return text, None
+                return text, None, pages_text
         except Exception as exc:  # pragma: no cover
             last_error = f"pdfplumber failed: {exc}"
 
     if not text:
-        return "", last_error or "No text could be extracted (scanned image / empty PDF)."
-    return text, None
+        return "", last_error or "No text could be extracted (scanned image / empty PDF).", []
+    return text, None, pages_text
 
 
 def is_valid_bid_document(text: str) -> bool:
@@ -430,27 +409,31 @@ def is_valid_bid_document(text: str) -> bool:
     return False
 
 
-def read_uploaded_file(uploaded) -> Tuple[str, Optional[str]]:
-    """Read a Streamlit UploadedFile into text, dispatching by extension."""
+def read_uploaded_file(uploaded) -> Tuple[str, Optional[str], List[str], bytes]:
+    """Read a Streamlit UploadedFile into text, dispatching by extension.
+    Returns (text, error, page_texts, raw_bytes).
+    """
     name = (getattr(uploaded, "name", "") or "").lower()
     try:
         data = uploaded.getvalue()
     except Exception as exc:
-        return "", f"Could not read bytes: {exc}"
+        return "", f"Could not read bytes: {exc}", [], b""
 
     if name.endswith(".pdf"):
-        return extract_text_from_pdf_bytes(data)
+        text, err, pages = extract_text_from_pdf_bytes(data)
+        return text, err, pages, data
     if name.endswith((".txt", ".csv", ".md")):
         try:
-            return data.decode("utf-8", errors="replace"), None
+            text = data.decode("utf-8", errors="replace")
+            return text, None, [text], data
         except Exception as exc:
-            return "", f"Decode failed: {exc}"
+            return "", f"Decode failed: {exc}", [], data
     # Unknown binary type — attempt a lenient decode.
     try:
-        return data.decode("utf-8", errors="replace"), None
+        text = data.decode("utf-8", errors="replace")
+        return text, None, [text], data
     except Exception as exc:
-        return "", f"Unsupported file type: {exc}"
-
+        return "", f"Unsupported file type: {exc}", [], data
 
 # ===========================================================================
 # SECTION 4 — DATA STRUCTURES
@@ -515,114 +498,7 @@ class VendorResult:
     summary: str = ""
 
 
-# ===========================================================================
-# SECTION 5 — SPEC LIBRARY (recognised technical parameters)
-# ===========================================================================
-# Each entry teaches the deterministic engine how to (a) detect the requirement
-# value inside the Master BID and (b) extract the vendor's claimed value, then
-# compare them. This is the auditable backbone: verdicts come from explicit
-# rules, never from an opaque model — which is exactly what a legal evaluation
-# requires. The LLM layer (Section 7) only enriches classification + narrative.
-
-SPEC_LIBRARY = [
-    {
-        "key": "architecture",
-        "label": "Switch Architecture (Layer-3)",
-        "bid_kw": ["layer-3", "layer 3", "l3"],
-        "vendor_kw": ["layer-3", "layer 3", "l3"],
-        "op": "bool",
-        "bid_value": "Managed Layer-3 switch",
-        "unit": "",
-    },
-    {
-        "key": "temperature",
-        "label": "Operating Temperature",
-        "bid_kw": ["operating temperature", "ambient", "degc"],
-        "bid_value_re": r"up to\s*(\d+)\s*deg",
-        "vendor_kw": ["temperature", "ambient", "degc", "operating environment"],
-        "vendor_value_re": r"(\d+)\s*deg",
-        "op": "gte",
-        "unit": "degC",
-    },
-    {
-        "key": "throughput",
-        "label": "Switching Throughput",
-        "bid_kw": ["throughput", "gbps"],
-        "bid_value_re": r"(\d+)\s*gbps",
-        "vendor_kw": ["throughput", "gbps"],
-        "vendor_value_re": r"(\d+)\s*gbps",
-        "op": "gte",
-        "unit": "Gbps",
-    },
-    {
-        "key": "warranty",
-        "label": "Warranty Period",
-        "bid_kw": ["warranty", "months"],
-        "bid_value_re": r"(\d+)\s*months",
-        "vendor_kw": ["warranty", "months"],
-        "vendor_value_re": r"(\d+)\s*months",
-        "op": "gte",
-        "unit": "months",
-    },
-    {
-        "key": "ports",
-        "label": "Port Density",
-        "bid_kw": ["port density", "ports"],
-        "bid_value_re": r"(\d+)\s*x\s*1g",
-        "vendor_kw": ["ports", "port density"],
-        "vendor_value_re": r"(\d+)\s*x\s*1g",
-        "op": "gte",
-        "unit": "ports",
-    },
-    {
-        "key": "redundant_power",
-        "label": "Redundant Power Supply",
-        "bid_kw": ["redundant power", "power supply", "1+1"],
-        "vendor_kw": ["dual", "1+1", "hot-swappable power", "redundant power"],
-        "op": "bool",
-        "bid_value": "Dual hot-swappable PSU (1+1)",
-        "unit": "",
-    },
-    # ---- Preferred / desirable ----
-    {
-        "key": "stacking",
-        "label": "Hardware Stacking",
-        "bid_kw": ["stacking"],
-        "vendor_kw": ["stacking", "stack"],
-        "op": "bool",
-        "bid_value": "Stacking support",
-        "unit": "",
-    },
-    {
-        "key": "ipv6",
-        "label": "Native IPv6 Support",
-        "bid_kw": ["ipv6"],
-        "vendor_kw": ["ipv6", "dual-stack"],
-        "op": "bool",
-        "bid_value": "Native IPv4/IPv6",
-        "unit": "",
-    },
-    {
-        "key": "macsec",
-        "label": "MACsec Encryption",
-        "bid_kw": ["macsec"],
-        "vendor_kw": ["macsec"],
-        "op": "bool",
-        "bid_value": "Hardware MACsec",
-        "unit": "",
-    },
-    {
-        "key": "extended_warranty",
-        "label": "Extended OEM Warranty (>36m)",
-        "bid_kw": ["extended", "warranty beyond"],
-        "vendor_kw": ["warranty", "months"],
-        "vendor_value_re": r"(\d+)\s*months",
-        "op": "gt_bonus",
-        "bid_value": "Warranty beyond 36 months",
-        "unit": "months",
-        "baseline": 36,
-    },
-]
+# SPEC_LIBRARY removed - requirements are now extracted dynamically by RAGAuditEngine
 
 
 # ===========================================================================
@@ -653,341 +529,17 @@ class AuditEngine:
         words = norm_text[:300].split()
         return " ".join(words[:-1]) + "..." if words else ""
 
-    # ---- master BID parsing --------------------------------------------
     def parse_master_bid(self, text: str) -> Dict[str, Any]:
-        low = text.lower()
-
-        # Tender ID / Number
-        tender_id = ""
-        m = re.search(r"tender\s*(?:no\.?|number|id)\s*[:\-]?\s*([A-Z0-9][A-Z0-9/_\-]{4,})", text, re.I)
-        if m:
-            tender_id = m.group(1).strip().rstrip(".")
-
-        # Section slicing for mandatory vs preferred specs
-        mand_block, pref_block = self._split_spec_sections(text)
-
-        mandatory_specs: List[Dict[str, Any]] = []
-        preferred_specs: List[Dict[str, Any]] = []
-        for spec in SPEC_LIBRARY:
-            in_mand = any(k in mand_block.lower() for k in spec["bid_kw"])
-            in_pref = any(k in pref_block.lower() for k in spec["bid_kw"])
-            required = self._bid_required_value(spec, mand_block if in_mand else pref_block)
-            entry = {**spec, "required_value": required}
-            if in_mand and spec["op"] != "gt_bonus":
-                mandatory_specs.append(entry)
-            elif in_pref or spec["op"] == "gt_bonus":
-                preferred_specs.append(entry)
-
-        # PQC
-        pqc: List[Dict[str, Any]] = []
-        m = re.search(r"minimum of\s*(\d+)\s*years?\s*of\s*experience", low)
-        if m:
-            pqc.append({"key": "experience", "label": "Minimum Experience",
-                        "threshold": float(m.group(1)), "unit": "years", "section": "2.1"})
-        m = re.search(r"turnover[^0-9]*?(?:inr|rs\.?)?\s*([\d,\.]+)\s*crore", low)
-        if m:
-            pqc.append({"key": "turnover", "label": "Average Annual Turnover",
-                        "threshold": float(m.group(1).replace(",", "")), "unit": "INR Crore",
-                        "section": "2.2"})
-        if "government e-marketplace" in low or "gem" in low:
-            pqc.append({"key": "gem", "label": "GeM Registration", "threshold": None,
-                        "unit": "", "section": "2.3"})
-
-        # Mandatory documents
-        doc_map = [
-            ("Manufacturer's Authorization Form (MAF)", ["manufacturer's authorization", "maf"]),
-            ("PAN Card", ["pan card", "pan "]),
-            ("GST Registration", ["gst registration", "gst "]),
-            ("GeM Registration", ["gem registration", "gem "]),
-            ("Audited Balance Sheet", ["balance sheet", "audited"]),
-        ]
-        mandatory_docs = []
-        sec3 = self._section(text, "MANDATORY DOCUMENTS", "SECTION 5")
-        sec3_low = sec3.lower() if sec3 else low
-        for canonical, kws in doc_map:
-            if any(k in sec3_low for k in kws):
-                mandatory_docs.append(canonical)
-
-        return {
-            "tender_id": tender_id,
-            "pqc": pqc,
-            "mandatory_docs": mandatory_docs,
-            "mandatory_specs": mandatory_specs,
-            "preferred_specs": preferred_specs,
-            "raw": text,
-        }
-
-    def _split_spec_sections(self, text: str) -> Tuple[str, str]:
-        mand = self._section(text, "MANDATORY TECHNICAL SPECIFICATIONS",
-                             "DESIRABLE / PREFERRED TECHNICAL SPECIFICATIONS") or ""
-        pref = self._section(text, "DESIRABLE / PREFERRED TECHNICAL SPECIFICATIONS",
-                             "DEVIATIONS") or ""
-        if not mand:  # fallback: whole doc counts as mandatory context
-            mand = text
-        return mand, pref
-
-    @staticmethod
-    def _section(text: str, start_marker: str, end_marker: str) -> Optional[str]:
-        low = text.lower()
-        s = low.find(start_marker.lower())
-        if s == -1:
-            return None
-        e = low.find(end_marker.lower(), s + len(start_marker))
-        if e == -1:
-            e = len(text)
-        return text[s:e]
-
-    @staticmethod
-    def _bid_required_value(spec: Dict[str, Any], block: str) -> Any:
-        if spec.get("bid_value_re"):
-            m = re.search(spec["bid_value_re"], block, re.I)
-            if m:
-                return float(m.group(1))
-        return spec.get("bid_value", True)
+        # Implementation moved to RAGAuditEngine
+        pass
 
     # ---- document classification ---------------------------------------
-    def classify_document(self, filename: str, text: str) -> str:
-        low = (text or "").lower()
-        header = low[:1500]  # Use first 1500 chars to establish primary document context
-        scores: Dict[str, int] = {t: 0 for t in DOC_TYPES}
-
-        def add(t, n=1):
-            if t in scores:
-                scores[t] += n
-            else:
-                scores[t] = n
-
-        # Trap common false positives first
-        is_explicit_maf = any(k in header for k in ["manufacturer's authorization", "manufacturer authorization", "authorization form"])
-
-        if "contract" in header and "gem" in header:
-            add("GeM Contract / Agreement", 2 if is_explicit_maf else 5)
-        if "bid document" in header and "gem" in header:
-            add("Master BID Document", 2 if is_explicit_maf else 5)
-        if "affidavit" in header or "non judicial" in header or "undertaking" in header:
-            add("Affidavit / Undertaking", 2 if is_explicit_maf else 5)
-
-        # Stricter MAF rule: Must declare authorization in the header, and NOT be a contract/bid/affidavit
-        if any(k in header for k in ["manufacturer's authorization", "authorization form",
-                                     "authorize", "oem", "original equipment manufacturer"]) \
-                and any(k in header for k in ["authoriz", "maf"]):
-            is_contract = "contract" in header and "gem" in header and not is_explicit_maf
-            is_bid = "bid document" in header and "gem" in header and not is_explicit_maf
-            is_affidavit = ("affidavit" in header or "non judicial" in header) and not is_explicit_maf
-            if not (is_contract or is_bid or is_affidavit):
-                add("Manufacturer's Authorization Form (MAF)", 6 if is_explicit_maf else 4)
-
-        if any(k in low for k in ["technical", "datasheet", "specification", "throughput", "switch", "model"]):
-            add("Technical Datasheet / Bid", 2)
-        if any(k in low for k in ["price bid", "price schedule", "commercial bid", "commercial",
-                                  "quoted", "price"]):
-            add("Commercial / Price Bid", 2)
-        if "permanent account number" in low or re.search(r"\bpan\b", low):
-            add("PAN Card", 3)
-        if "gstin" in low or "goods and services tax" in low or re.search(r"\bgst\b", low):
-            add("GST Registration", 3)
-        if "gem" in low or "e-marketplace" in low or "e marketplace" in low:
-            add("GeM Registration", 3)
-        if "balance sheet" in low or "profit and loss" in low or "audited" in low:
-            add("Audited Balance Sheet", 3)
-        if "completion certificate" in low or "past performance" in low or "experience" in low \
-                or "track record" in low or "about " in low:
-            add("Experience / Past Performance Certificate", 2)
-        if "deviation" in low:
-            add("Deviation Statement", 2)
-        if "registration" in low and "company" in low:
-            add("Company Registration", 2)
-
-        best = max(scores, key=lambda k: scores[k])
-        return best if scores[best] > 0 else "Unclassified Document"
-
-    # ---- readability heuristic -----------------------------------------
-    @staticmethod
-    def assess_readability(text: str, error: Optional[str]) -> str:
-        if error and not (text or "").strip():
-            return READ_CORRUPT
-        clean = (text or "").strip()
-        if len(clean) < 15:
-            return READ_CORRUPT
-        total = len(clean)
-        bad = clean.count("\ufffd")
-        good = sum(1 for c in clean if c.isalnum() or c.isspace() or c in ".,:;/()-+&%₹")
-        good_ratio = good / total
-        bad_ratio = bad / total
-        if bad_ratio > 0.015 or good_ratio < 0.85:
-            return READ_LOW
-        return READ_PASS
-
-    # ---- MAF validation gate -------------------------------------------
-    def validate_maf(self, inventory: List[InventoryItem], files: Dict[str, str],
-                     tender_id: str) -> MAFResult:
-        maf_file = next((i for i in inventory
-                         if i.doc_type == "Manufacturer's Authorization Form (MAF)"), None)
-        if not maf_file:
-            return MAFResult(status=MAF_MISSING,
-                             evidence="No file in this vendor's submission was classified as a "
-                                      "Manufacturer's Authorization Form. No OEM authorization "
-                                      "letterhead or signature pattern was detected.")
-        text = files.get(maf_file.filename, "")
-        low = text.lower()
-
-        has_letterhead = any(k in low for k in ["letterhead", "oem", "original equipment manufacturer"]) \
-            or bool(re.search(r"(cisco|juniper|hp|hpe|aruba|dell|arista|extreme|huawei)\b", low))
-        has_auth = "authoriz" in low
-        tender_present = bool(tender_id) and tender_id.lower() in low
-
-        if has_letterhead and has_auth and tender_present:
-            return MAFResult(status=MAF_VALID,
-                             evidence='Authorization confirmed on OEM letterhead and references '
-                                      f'the correct Tender No. "{tender_id}". '
-                                      + self._snippet(text, tender_id),
-                             source_file=maf_file.filename)
-
-        reasons = []
-        if not has_letterhead:
-            reasons.append("Not on a recognised OEM letterhead")
-        if not has_auth:
-            reasons.append("No explicit authorization statement found")
-        if not tender_present:
-            ref = re.search(r"tender\s*no\.?\s*[:\-]?\s*([A-Z0-9/_\-]{4,})", text, re.I)
-            if ref and tender_id:
-                reasons.append(f'References "{ref.group(1).rstrip(".")}" instead of the '
-                               f'required Tender No. "{tender_id}"')
-            elif tender_id:
-                reasons.append(f'Does not reference the required Tender No. "{tender_id}"')
-            else:
-                reasons.append('Does not reference a valid Tender No.')
-        snippet = self._snippet(text, "tender")
-        return MAFResult(status=MAF_INVALID,
-                         evidence="Document resembles an MAF but is non-compliant:\n• "
-                                  + "\n• ".join(reasons)
-                                  + f"\n\nExtracted Text:\n\"{snippet}\"",
-                         source_file=maf_file.filename)
-
-    # ---- vendor metric extraction --------------------------------------
-    def extract_spec(self, spec: Dict[str, Any], vendor_text: str, mandatory: bool) -> SpecResult:
-        low = vendor_text.lower()
-        op = spec["op"]
-        required = spec.get("required_value", spec.get("bid_value", True))
-        unit = spec.get("unit", "")
-
-        if op in ("gte", "lte"):
-            val = self._find_number(vendor_text, spec)
-            if val is None:
-                return SpecResult(spec["label"], self._fmt(required, unit), "[DATA LACKING]",
-                                  "lacking", mandatory)
-            ok = (val >= required) if op == "gte" else (val <= required)
-            return SpecResult(spec["label"], self._fmt(required, unit), self._fmt(val, unit),
-                              "match" if ok else "fail", mandatory)
-
-        if op == "bool":
-            present = any(k in low for k in spec["vendor_kw"])
-            return SpecResult(spec["label"], "Required", "Provided" if present else "[DATA LACKING]",
-                              "match" if present else "lacking", mandatory)
-
-        if op == "gt_bonus":
-            val = self._find_number(vendor_text, spec)
-            baseline = spec.get("baseline", 0)
-            if val is None:
-                return SpecResult(spec["label"], f">{baseline} {unit}", "[DATA LACKING]",
-                                  "lacking", mandatory)
-            ok = val > baseline
-            return SpecResult(spec["label"], f">{baseline} {unit}", self._fmt(val, unit),
-                              "match" if ok else "fail", mandatory)
-
-        return SpecResult(spec["label"], str(required), "[DATA LACKING]", "lacking", mandatory)
-
-    @staticmethod
-    def _find_number(text: str, spec: Dict[str, Any]) -> Optional[float]:
-        if not any(k in text.lower() for k in spec["vendor_kw"]) and not spec.get("vendor_value_re"):
-            return None
-        vre = spec.get("vendor_value_re")
-        if not vre:
-            return None
-        # Prefer a number that appears near a vendor keyword.
-        best = None
-        for m in re.finditer(vre, text, re.I):
-            window = text[max(0, m.start() - 40): m.start()].lower()
-            if any(k in window for k in spec["vendor_kw"]) or best is None:
-                best = float(m.group(1))
-                if any(k in window for k in spec["vendor_kw"]):
-                    return best
-        return best
-
-    @staticmethod
-    def _fmt(val: Any, unit: str) -> str:
-        if isinstance(val, bool):
-            return "Required" if val else "-"
-        if isinstance(val, float) and val.is_integer():
-            val = int(val)
-        return f"{val} {unit}".strip()
-
-    # ---- deviation detection -------------------------------------------
-    def detect_deviations(self, vendor_text: str) -> List[str]:
-        deviations = []
-        patterns = [
-            r"[^.]*cannot supply[^.]*\.",
-            r"[^.]*instead we will provide[^.]*\.",
-            r"[^.]*deviation[^.]*\.",
-            r"[^.]*not supported[^.]*\.",
-            r"[^.]*as an alternative[^.]*\.",
-        ]
-        for pat in patterns:
-            for m in re.finditer(pat, vendor_text, re.I):
-                snip = self._norm(m.group(0))
-                # Strip leading non-alphanumeric characters (like '(', '[', '-', etc.)
-                snip = re.sub(r"^[^a-zA-Z0-9]+", "", snip)
-                if snip:
-                    snip = snip[0].upper() + snip[1:]
-                if snip and snip not in deviations and len(snip) > 12:
-                    deviations.append(snip)
-        return deviations[:6]
-
-    # ---- PQC evaluation -------------------------------------------------
-    def evaluate_pqc(self, pqc_reqs: List[Dict[str, Any]], vendor_text: str,
-                     has_gem_doc: bool) -> List[PQCResult]:
-        low = vendor_text.lower()
-        results = []
-        for req in pqc_reqs:
-            if req["key"] == "experience":
-                years = self._max_years(vendor_text)
-                provided = f"{years} years" if years is not None else "[NOT FOUND]"
-                passed = years is not None and years >= req["threshold"]
-                results.append(PQCResult(req["label"], f"≥ {int(req['threshold'])} years",
-                                         provided, passed, req["section"]))
-            elif req["key"] == "turnover":
-                turnover = self._max_turnover(vendor_text)
-                provided = f"INR {turnover} Crore" if turnover is not None else "[NOT FOUND]"
-                passed = turnover is not None and turnover >= req["threshold"]
-                results.append(PQCResult(req["label"], f"≥ INR {req['threshold']:g} Crore",
-                                         provided, passed, req["section"]))
-            elif req["key"] == "gem":
-                provided = "Registered" if has_gem_doc else "[NOT FOUND]"
-                results.append(PQCResult(req["label"], "Required", provided,
-                                         has_gem_doc, req["section"]))
-        return results
-
-    @staticmethod
-    def _max_years(text: str) -> Optional[float]:
-        # Capture "<N> years" only when the surrounding context indicates the
-        # number refers to experience / track record, not e.g. financial years.
-        kws = ["experience", "supplying", "supply", "performance", "providing",
-               "networking", "commissioning", "domain", "years in", "track record"]
-        vals: List[float] = []
-        for mt in re.finditer(r"(\d+(?:\.\d+)?)\s*years?", text, re.I):
-            val = float(mt.group(1))
-            if val > 60:  # implausible for experience; likely a typo or other metric
-                continue
-            ctx = text[max(0, mt.start() - 55): mt.end() + 55].lower()
-            if any(k in ctx for k in kws):
-                vals.append(val)
-        return max(vals) if vals else None
-
-    @staticmethod
-    def _max_turnover(text: str) -> Optional[float]:
-        vals = [float(m.group(1).replace(",", "")) for m in re.finditer(
-            r"turnover[^0-9]*?([\d,\.]+)\s*crore", text, re.I)]
-        return max(vals) if vals else None
+    def classify_document(self, filename: str, text: str) -> str: return "Unclassified Document"
+    def validate_maf(self, inventory: List[InventoryItem], files: Dict[str, str], tender_id: str) -> MAFResult: return MAFResult(status=MAF_MISSING, evidence="Engine fallback")
+    def extract_spec(self, spec: Dict[str, Any], vendor_text: str, mandatory: bool) -> SpecResult: return SpecResult(spec.get("label", ""), str(spec.get("required_value", "")), "[DATA LACKING]", "lacking", mandatory)
+    def detect_deviations(self, vendor_text: str) -> List[str]: return []
+    def evaluate_pqc(self, pqc_reqs: List[Dict[str, Any]], vendor_text: str) -> List[PQCResult]: return []
+    def check_missing_docs(self, mandatory_docs: List[str], vendor_text: str, inventory: List[InventoryItem]) -> List[str]: return []
 
     # ---- full vendor analysis (orchestration) --------------------------
     def analyze_vendor(self, name: str, files: Dict[str, str],
@@ -1001,14 +553,13 @@ class AuditEngine:
             result.inventory.append(InventoryItem(fname, doc_type, readability))
 
         present_types = {i.doc_type for i in result.inventory}
-        has_gem_doc = "GeM Registration" in present_types
         combined_text = "\n".join(files.values())
 
         # 2. MAF gate
         result.maf = self.validate_maf(result.inventory, files, bid.get("tender_id", ""))
 
         # 3. PQC
-        result.pqc = self.evaluate_pqc(bid.get("pqc", []), combined_text, has_gem_doc)
+        result.pqc = self.evaluate_pqc(bid.get("pqc", []), combined_text)
 
         # 4. Technical specs
         for spec in bid.get("mandatory_specs", []):
@@ -1020,9 +571,7 @@ class AuditEngine:
         result.deviations = self.detect_deviations(combined_text)
 
         # 6. Missing mandatory documents
-        for doc in bid.get("mandatory_docs", []):
-            if doc not in present_types:
-                result.missing_documents.append(doc)
+        result.missing_documents = self.check_missing_docs(bid.get("mandatory_docs", []), combined_text, result.inventory)
 
         # 7. Disqualification gate (binary, eligibility-level)
         self._apply_disqualification_gate(result, bid)
@@ -1036,30 +585,21 @@ class AuditEngine:
 
     def _apply_disqualification_gate(self, r: VendorResult, bid: Dict[str, Any]) -> None:
         tender_id = bid.get("tender_id", "")
-        maf_required = "Manufacturer's Authorization Form (MAF)" in bid.get("mandatory_docs", [])
 
-        # MAF gate
-        if maf_required:
-            if r.maf and r.maf.status == MAF_MISSING:
-                r.violations.append(Violation(
-                    "Missing Mandatory Document — MAF",
-                    f'Section 3.1: A valid MAF signed by the OEM referencing Tender No. '
-                    f'"{tender_id}" is an absolute prerequisite for technical qualification.',
-                    r.maf.evidence))
-            elif r.maf and r.maf.status == MAF_INVALID:
-                r.violations.append(Violation(
-                    "Invalid / Non-Compliant MAF",
-                    f'Section 3.1: The MAF must be on OEM letterhead and reference Tender No. "{tender_id}".',
-                    r.maf.evidence))
+        # MAF gate check: If they provided an MAF but it is invalid, that's an explicit violation.
+        # (If MAF is completely missing, it will be caught by the missing_documents gate below if it was actually requested).
+        if r.maf and r.maf.status == MAF_INVALID:
+            r.violations.append(Violation(
+                "Invalid / Non-Compliant MAF",
+                f'Section 3.1: The Manufacturer Authorization Form must explicitly reference Tender No. "{tender_id}" and be valid.',
+                r.maf.evidence))
 
-        # Other mandatory documents
+        # Other mandatory documents (including MAF if it was missing entirely and required)
         for doc in r.missing_documents:
-            if doc == "Manufacturer's Authorization Form (MAF)":
-                continue  # already captured by the MAF gate
             r.violations.append(Violation(
                 f"Missing Mandatory Document — {doc}",
                 f"Section 3: Submission of {doc} is mandatory.",
-                f"No file in the vendor's submission was classified as {doc}."))
+                f"No suitable document fulfilling the requirements of '{doc}' was found in the vendor's submission."))
 
         # PQC gate
         for p in r.pqc:
@@ -1182,75 +722,362 @@ class AuditEngine:
 
 
 # ===========================================================================
-# SECTION 7 — OPTIONAL LLM AUGMENTATION LAYER
+# SECTION 7 — LOCAL RAG AI AUGMENTATION LAYER
 # ===========================================================================
-# Critically, the LLM never overrides a compliance verdict. Deterministic rules
-# decide pass/fail (auditability). The LLM only: (a) re-classifies documents the
-# rules left "Unclassified", and (b) writes the executive narrative. Both paths
-# fall back to the deterministic output on any error, so the demo cannot break.
 
-class LLMAuditEngine(AuditEngine):
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6"):
-        self.model = model
-        self._client = None
-        if HAS_ANTHROPIC and api_key:
-            try:
-                self._client = anthropic.Anthropic(api_key=api_key)
-            except Exception:
-                self._client = None
+import json
 
-    def _complete(self, system: str, prompt: str, max_tokens: int = 600) -> Optional[str]:
-        if not self._client:
-            return None
+class RAGAuditEngine(AuditEngine):
+    def __init__(self, model_name: str = "llama3"):
+        super().__init__()
+        self.model_name = model_name
+        self.llm = None
+        self.embeddings = None
+        self.vectorstores = {}
+        self.text_splitter = None
+        
         try:
-            resp = self._client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                system=system,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+            import os
+            from langchain_community.embeddings import HuggingFaceEmbeddings
+            from langchain_chroma import Chroma
+            from langchain.text_splitter import RecursiveCharacterTextSplitter
+            
+            groq_key = os.environ.get("GROQ_API_KEY")
+            if groq_key:
+                try:
+                    from langchain_groq import ChatGroq
+                    self.llm = ChatGroq(model_name="llama3-70b-8192", groq_api_key=groq_key, temperature=0.0)
+                except ImportError:
+                    from langchain_community.llms import Ollama
+                    self.llm = Ollama(model=self.model_name, temperature=0.0)
+            else:
+                from langchain_community.llms import Ollama
+                self.llm = Ollama(model=self.model_name, temperature=0.0)
+
+            self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+            self.text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            self.Chroma = Chroma
+        except ImportError:
+            pass # Gracefully degrade if Langchain is not installed
+
+    def _create_vectorstore(self, text: str, store_id: str):
+        if not self.embeddings: return None
+        chunks = self.text_splitter.split_text(text)
+        vectorstore = self.Chroma.from_texts(chunks, self.embeddings, collection_name=store_id)
+        self.vectorstores[store_id] = vectorstore
+        return vectorstore
+
+    def _create_multi_vectorstore(self, files: Dict[str, str], store_id: str):
+        if not self.embeddings: return None
+        chunks = []
+        metadatas = []
+        for fname, text in files.items():
+            file_chunks = self.text_splitter.split_text(text)
+            chunks.extend(file_chunks)
+            metadatas.extend([{"source": fname}] * len(file_chunks))
+        vectorstore = self.Chroma.from_texts(chunks, self.embeddings, metadatas=metadatas, collection_name=store_id)
+        self.vectorstores[store_id] = vectorstore
+        return vectorstore
+
+    def parse_master_bid(self, bid_text: str) -> Dict[str, Any]:
+        if not self.llm: return {"tender_id": "UNKNOWN", "mandatory_docs": [], "pqc": [], "mandatory_specs": [], "preferred_specs": []}
+        from langchain.prompts import PromptTemplate
+        from langchain.chains import LLMChain
+        
+        vs = self._create_vectorstore(bid_text, "master_bid")
+        relevant_docs = vs.similarity_search("mandatory technical specifications preferred requirements pre-qualification criteria MAF documents needed", k=20)
+        context = "\n\n".join([d.page_content for d in relevant_docs])
+
+        prompt = PromptTemplate(
+            input_variables=["context"],
+            template="""You are an expert procurement officer. Analyze the following excerpts from a Master BID document and extract ALL required criteria.
+            IMPORTANT: Do not summarize or omit any requirements. Extract every single mandatory document, pre-qualification criteria, and technical specification found in the text.
+            Format the output strictly as a JSON object with the following structure:
+            {{
+                "tender_id": "Extracted tender ID or 'UNKNOWN'",
+                "mandatory_docs": ["List of mandatory document names, e.g., 'Manufacturer's Authorization Form (MAF)'"],
+                "pqc": [
+                    {{"label": "Name of criterion", "key": "experience/turnover/gem/other", "threshold": numerical_value_if_any, "unit": "years/crores/etc", "section": "Section reference"}}
+                ],
+                "mandatory_specs": [
+                    {{"label": "Parameter Name", "param": "Parameter Description", "required_value": "Expected value/True", "op": "gte/lte/bool", "unit": "units if any"}}
+                ],
+                "preferred_specs": [
+                    {{"label": "Parameter Name", "param": "Parameter Description", "required_value": "Expected value/True", "op": "gte/lte/bool/gt_bonus", "unit": "units if any", "baseline": numerical_value}}
+                ]
+            }}
+
+            Context:
+            {context}
+
+            JSON Output:
+            """
+        )
+        chain = LLMChain(llm=self.llm, prompt=prompt)
+        try:
+            response = chain.run(context=context)
+            json_str = response[response.find('{'):response.rfind('}')+1]
+            return json.loads(json_str)
         except Exception:
-            return None
+            return {"tender_id": "UNKNOWN", "mandatory_docs": [], "pqc": [], "mandatory_specs": [], "preferred_specs": []}
+
+    def validate_maf(self, inventory: List[InventoryItem], files: Dict[str, str], tender_id: str) -> MAFResult:
+        if not self.llm: return MAFResult(status=MAF_MISSING, evidence="LLM not initialized.")
+        from langchain.prompts import PromptTemplate
+        from langchain.chains import LLMChain
+
+        vs = self._create_multi_vectorstore(files, "temp_maf_search")
+        if not vs: return MAFResult(status=MAF_MISSING, evidence="Vectorstore not initialized.")
+        
+        relevant_docs = vs.similarity_search("Manufacturer Authorization Form MAF OEM Letter", k=4)
+        if not relevant_docs:
+            return MAFResult(status=MAF_MISSING, evidence="Could not locate any Manufacturer Authorization related documents.")
+            
+        context = "\n\n".join([f"Source File: {d.metadata.get('source')}\nContent:\n{d.page_content}" for d in relevant_docs])
+
+        prompt = PromptTemplate(
+            input_variables=["context", "tender_id"],
+            template="""You are a strict procurement auditor. Review these document excerpts to verify if there is a valid Manufacturer's Authorization Form (MAF).
+            A valid MAF must be on the original equipment manufacturer's (OEM) letterhead.
+            It must explicitly authorize the vendor to participate in tender ID: {tender_id}.
+            
+            Excerpts:
+            {context}
+            
+            Output JSON exactly like this:
+            {{
+                "is_maf_present": true/false,
+                "is_valid": true/false,
+                "reasoning": "Detailed explanation of why it is valid or invalid",
+                "extracted_snippet": "A short 1-2 sentence snippet from the text proving the authorization and tender ID",
+                "source_file": "The exact 'Source File' name where the MAF was found"
+            }}
+            """
+        )
+        chain = LLMChain(llm=self.llm, prompt=prompt)
+        try:
+            response = chain.run(context=context, tender_id=tender_id)
+            json_str = response[response.find('{'):response.rfind('}')+1]
+            data = json.loads(json_str)
+            
+            if not data.get("is_maf_present"):
+                return MAFResult(status=MAF_MISSING, evidence="No valid MAF document was identified in the submission.")
+                
+            src = data.get("source_file", "")
+            if data.get("is_valid"):
+                return MAFResult(status=MAF_VALID, evidence=f"Valid MAF. {data.get('reasoning')}\nExtracted: {data.get('extracted_snippet')}", source_file=src)
+            else:
+                return MAFResult(status=MAF_INVALID, evidence=f"Invalid MAF. {data.get('reasoning')}", source_file=src)
+        except Exception as e:
+            return MAFResult(status=MAF_INVALID, evidence=f"Failed to evaluate MAF: {str(e)}", source_file="")
+
+    def evaluate_pqc(self, pqc_reqs: List[Dict[str, Any]], vendor_text: str) -> List[PQCResult]:
+        if not self.llm: return []
+        results = []
+        from langchain.prompts import PromptTemplate
+        from langchain.chains import LLMChain
+        
+        vs = self._create_vectorstore(vendor_text, "vendor_pqc")
+
+        for req in pqc_reqs:
+            query = f"{req['label']} {req.get('key', '')} requirements"
+            relevant_docs = vs.similarity_search(query, k=5)
+            context = "\n\n".join([d.page_content for d in relevant_docs])
+
+            prompt = PromptTemplate(
+                input_variables=["req", "context"],
+                template="""You are verifying a vendor's pre-qualification criteria.
+                Criterion: {req}
+                
+                Vendor Text:
+                {context}
+                
+                Extract the vendor's provided value for this criterion.
+                Output JSON exactly like this:
+                {{
+                    "provided_value": "The specific value found (e.g. '12 years', 'Registered', or '500 Crores') or '[NOT FOUND]'",
+                    "meets_threshold": true/false
+                }}
+                """
+            )
+            chain = LLMChain(llm=self.llm, prompt=prompt)
+            try:
+                response = chain.run(req=json.dumps(req), context=context)
+                json_str = response[response.find('{'):response.rfind('}')+1]
+                data = json.loads(json_str)
+                provided = data.get("provided_value", "[NOT FOUND]")
+                passed = data.get("meets_threshold", False)
+                req_val = f"≥ {req.get('threshold', '')} {req.get('unit', '')}" if req.get('threshold') else "Required"
+                results.append(PQCResult(req["label"], req_val, provided, passed, req.get("section", "")))
+            except Exception:
+                req_val = f"≥ {req.get('threshold', '')} {req.get('unit', '')}" if req.get('threshold') else "Required"
+                results.append(PQCResult(req["label"], req_val, "[ERROR]", False, req.get("section", "")))
+                
+        return results
+
+    def check_missing_docs(self, mandatory_docs: List[str], vendor_text: str, inventory: List[InventoryItem]) -> List[str]:
+        if not self.llm or not mandatory_docs: return []
+        from langchain.prompts import PromptTemplate
+        from langchain.chains import LLMChain
+        
+        inventory_str = "\n".join([f"- {i.filename}: {i.doc_type}" for i in inventory])
+        
+        prompt = PromptTemplate(
+            input_variables=["mandatory_docs", "inventory_str"],
+            template="""You are a procurement auditor. Check if all mandatory documents are present in the vendor's submission based on the classified inventory.
+            
+            Mandatory Documents Required:
+            {mandatory_docs}
+            
+            Vendor's Classified Inventory:
+            {inventory_str}
+            
+            Match the required documents to the inventory semantically (e.g., "OEM Letter" fulfills "Manufacturer Authorization").
+            List the EXACT NAMES of any Mandatory Documents that are completely missing.
+            
+            Output JSON exactly like this:
+            {{
+                "missing_documents": ["Exact name from Mandatory Documents list", ...]
+            }}
+            """
+        )
+        chain = LLMChain(llm=self.llm, prompt=prompt)
+        try:
+            response = chain.run(mandatory_docs=json.dumps(mandatory_docs), inventory_str=inventory_str)
+            json_str = response[response.find('{'):response.rfind('}')+1]
+            data = json.loads(json_str)
+            return data.get("missing_documents", [])
+        except Exception:
+            return []
 
     def classify_document(self, filename: str, text: str) -> str:
-        rule_type = super().classify_document(filename, text)
-        if rule_type != "Unclassified Document":
-            return rule_type
-        out = self._complete(
-            "You classify procurement documents. Reply with ONLY one label from this list: "
-            + "; ".join(DOC_TYPES),
-            f"Filename: {filename}\n\nContent (truncated):\n{text[:1500]}")
-        if out:
-            for t in DOC_TYPES:
-                if t.lower()[:12] in out.lower():
-                    return t
-        return rule_type
+        if not self.llm: return super().classify_document(filename, text)
+        from langchain.prompts import PromptTemplate
+        from langchain.chains import LLMChain
+        
+        prompt = PromptTemplate(
+            input_variables=["filename", "text"],
+            template="""You are an expert procurement officer classifying vendor documents.
+            Read the first few pages of the document and provide a highly accurate, descriptive name for the document type.
+            Examples: "UDYAM Registration Certificate", "Turnover Certificate", "Manufacturer's Authorization Form (MAF)", "Technical Brochure", "GeM Registration", etc.
+            
+            Filename: {filename}
+            
+            Document Text (truncated):
+            {text}
+            
+            Provide ONLY the exact document type name and nothing else.
+            Document Type:"""
+        )
+        chain = LLMChain(llm=self.llm, prompt=prompt)
+        try:
+            doc_type = chain.run(filename=filename, text=text[:2000]).strip()
+            return doc_type.strip('"\'')
+        except Exception:
+            return "Unclassified Document"
+
+    def detect_deviations(self, vendor_text: str) -> List[str]:
+        if not self.llm: return []
+        from langchain.prompts import PromptTemplate
+        from langchain.chains import LLMChain
+        
+        prompt = PromptTemplate(
+            input_variables=["text"],
+            template="""You are a procurement auditor looking for deviations in a vendor's technical offer.
+            Read the vendor's text and identify if they explicitly state any deviations, exceptions, or alternative proposals to the tender requirements.
+            Extract up to 6 key deviations.
+            
+            Vendor Text (truncated):
+            {text}
+            
+            Output JSON exactly like this:
+            {{
+                "deviations": ["deviation 1", "deviation 2"]
+            }}
+            """
+        )
+        chain = LLMChain(llm=self.llm, prompt=prompt)
+        try:
+            response = chain.run(text=vendor_text[:4000])
+            json_str = response[response.find('{'):response.rfind('}')+1]
+            data = json.loads(json_str)
+            return data.get("deviations", [])[:6]
+        except Exception:
+            return []
+
+    def extract_spec(self, spec: Dict[str, Any], vendor_text: str, mandatory: bool) -> SpecResult:
+        if not self.llm: return SpecResult(spec.get("label", ""), str(spec.get("required_value", "")), "[DATA LACKING]", "lacking", mandatory)
+        from langchain.prompts import PromptTemplate
+        from langchain.chains import LLMChain
+
+        vs = self._create_vectorstore(vendor_text, "temp_vendor_search")
+        query = f"{spec.get('label', '')} {spec.get('param', '')}"
+        relevant_docs = vs.similarity_search(query, k=5)
+        context = "\n\n".join([d.page_content for d in relevant_docs])
+
+        prompt = PromptTemplate(
+            input_variables=["spec", "context"],
+            template="""You are checking a vendor's technical submission against a required specification.
+            Specification to check: {spec}
+            
+            Vendor Text Context:
+            {context}
+            
+            Determine if the vendor meets the specification.
+            Output JSON exactly like this:
+            {{
+                "provided_value": "The value the vendor provided, or '[DATA LACKING]'",
+                "status": "match" if they meet the spec, else "fail", else "lacking" if not found
+            }}
+            """
+        )
+        chain = LLMChain(llm=self.llm, prompt=prompt)
+        try:
+            response = chain.run(spec=json.dumps(spec), context=context)
+            json_str = response[response.find('{'):response.rfind('}')+1]
+            data = json.loads(json_str)
+            required_val = str(spec.get("required_value", "Required"))
+            if "unit" in spec: required_val += f" {spec['unit']}"
+            return SpecResult(
+                param=spec.get("label", ""),
+                required=required_val,
+                provided=data.get("provided_value", "[DATA LACKING]"),
+                status=data.get("status", "lacking"),
+                mandatory=mandatory
+            )
+        except Exception as e:
+            required_val = str(spec.get("required_value", "Required"))
+            return SpecResult(spec.get("label", ""), required_val, "[DATA LACKING]", "lacking", mandatory)
 
     def narrate(self, bid: Dict[str, Any], results: List[VendorResult]) -> Optional[str]:
-        if not self._client:
-            return None
-        ranked = sorted([r for r in results if not r.disqualified],
-                        key=lambda x: x.score, reverse=True)
+        if not self.llm: return None
+        from langchain.prompts import PromptTemplate
+        from langchain.chains import LLMChain
+        
+        ranked = sorted([r for r in results if not r.disqualified], key=lambda x: x.score, reverse=True)
         dq = [r for r in results if r.disqualified]
         ctx = {
             "tender_id": bid.get("tender_id"),
-            "responsive": [{"name": r.name, "rank": r.rank, "score": r.score,
-                            "summary": r.summary} for r in ranked],
-            "disqualified": [{"name": r.name,
-                              "reasons": [v.title for v in r.violations]} for r in dq],
+            "responsive": [{"name": r.name, "rank": r.rank, "score": r.score, "summary": r.summary} for r in ranked],
+            "disqualified": [{"name": r.name, "reasons": [v.title for v in r.violations]} for r in dq],
         }
-        return self._complete(
-            "You are a PSU tender evaluation officer. Write a concise, formal executive "
-            "summary (max 120 words) of the evaluation outcome. Be factual, cite ranks and "
-            "the decisive reasons. Do not invent data beyond what is provided.",
-            json.dumps(ctx, indent=2), max_tokens=400)
+        prompt = PromptTemplate(
+            input_variables=["context"],
+            template="""You are a PSU tender evaluation officer. Write a concise, formal executive summary (max 120 words) of the evaluation outcome. Be factual, cite ranks and the decisive reasons. Do not invent data beyond what is provided.
+            
+            Context:
+            {context}
+            
+            Executive Summary:"""
+        )
+        chain = LLMChain(llm=self.llm, prompt=prompt)
+        try:
+            return chain.run(context=json.dumps(ctx, indent=2))
+        except Exception:
+            return None
 
-
-def get_engine(api_key: str = "", model: str = "claude-sonnet-4-6") -> AuditEngine:
-    if api_key and HAS_ANTHROPIC:
-        return LLMAuditEngine(api_key=api_key, model=model)
-    return AuditEngine()
+def get_engine() -> AuditEngine:
+    return RAGAuditEngine()
 
 
 # ===========================================================================
@@ -2101,9 +1928,9 @@ def render_audit_terminal(step: int, vendor_text: str, progress_pct: float) -> s
     </div>
     """
 
-def run_audit(api_key: str, model: str) -> None:
+def run_audit() -> None:
     ss = st.session_state
-    engine = get_engine(api_key, model)
+    engine = get_engine()
 
     placeholder = st.empty()
     
@@ -2195,7 +2022,50 @@ def view_documents_dialog(title: str, files_dict: Dict[str, str]) -> None:
         with st.expander(f"{html.escape(fname)}"):
             formatted_html = format_pdf_text_to_html(ftext)
             st.markdown(f"<div style='max-height: 500px; overflow-y: auto; overflow-x: hidden; background: var(--panel2); padding: 16px 22px; border-radius: 8px; border: 1px solid var(--line);'>{formatted_html}</div>", unsafe_allow_html=True)
-def render_sidebar() -> Tuple[str, str, bool]:
+
+
+@dialog_decorator("🔍 Double-Confirm Source", width="large")
+def show_double_confirm_dialog(vendor_name: str, r: VendorResult, title: str, filename: str, snippet: str = "") -> None:
+    st.markdown(f"### {title} for {vendor_name}")
+    st.caption("Inspect the original PDF rendering to verify.")
+    
+    st.markdown(f"**File:** {filename}")
+    if snippet:
+        st.markdown(f"**Extracted Snippet:**\n```\n{snippet}\n```")
+    else:
+        st.markdown("**Status:** Flagged for manual human review (Low-Quality or Corrupted).")
+    
+    pages = st.session_state.get("vendor_files_pages", {}).get(vendor_name, {}).get(filename, [])
+    raw_bytes = st.session_state.get("vendor_files_raw", {}).get(vendor_name, {}).get(filename, b"")
+    
+    found_page = -1
+    if snippet:
+        for i, page_text in enumerate(pages):
+            # Snippets might be slightly modified or truncated, do a simple substring check if possible
+            # or just fallback to page 1 if not easily found.
+            # Clean up whitespace for better matching
+            clean_snippet = " ".join(snippet.split())
+            clean_page = " ".join(page_text.split())
+            if clean_snippet in clean_page or (len(clean_snippet) > 20 and clean_snippet[:20] in clean_page):
+                found_page = i
+                break
+            
+    if found_page == -1 and pages:
+        # Fallback to first page
+        found_page = 0
+            
+    if found_page >= 0 and raw_bytes and HAS_PDFPLUMBER:
+        st.success(f"Rendering Page {found_page + 1}...")
+        try:
+            with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
+                page = pdf.pages[found_page]
+                im = page.to_image(resolution=150)
+                st.image(im.original, caption=f"Page {found_page + 1}")
+        except Exception as e:
+            st.error(f"Failed to render page image: {e}")
+    else:
+        st.warning("Could not locate the snippet on a specific page, or PDF rendering is not available.")
+def render_sidebar() -> bool:
     ss = st.session_state
     logo_b64 = get_base64_image("logo.jpg")
     glyph_content = f'<img src="data:image/jpeg;base64,{logo_b64}">' if logo_b64 else 'A'
@@ -2412,12 +2282,16 @@ margin-bottom: 24px; position: relative; overflow: hidden; display: flex; flex-d
                         added = False
                         for f in bid_up:
                             if f.name not in ss.bid_files:
-                                text, err = read_uploaded_file(f)
+                                text, err, pages, raw = read_uploaded_file(f)
                                 if text:
                                     if not is_valid_bid_document(text):
                                         st.error(f"'{f.name}' is not a valid BID document. Please enter a valid BID document.")
                                         continue
                                     ss.bid_files[f.name] = text
+                                    if "bid_files_pages" not in ss: ss.bid_files_pages = {}
+                                    if "bid_files_raw" not in ss: ss.bid_files_raw = {}
+                                    ss.bid_files_pages[f.name] = pages
+                                    ss.bid_files_raw[f.name] = raw
                                     added = True
                                 elif err:
                                     st.error(f"Could not read BID {f.name}: {err}")
@@ -2538,63 +2412,25 @@ margin-bottom: 24px; position: relative; overflow: hidden; display: flex; flex-d
                 </style>""", unsafe_allow_html=True)
 
         if add and vname and vfiles:
-            texts, errs = {}, {}
+            texts, errs, pages_dict, raw_dict = {}, {}, {}, {}
             with vendor_spinner_placeholder:
                 with custom_spinner(f"Extracting and classifying {len(vfiles)} documents for {vname}...", theme="purple"):
                     for f in vfiles:
-                        t, e = read_uploaded_file(f)
+                        t, e, p, r = read_uploaded_file(f)
                         texts[f.name] = t
                         errs[f.name] = e
+                        pages_dict[f.name] = p
+                        raw_dict[f.name] = r
             ss.vendor_files[vname] = texts
             ss.vendor_errors[vname] = errs
+            if "vendor_files_pages" not in ss: ss.vendor_files_pages = {}
+            if "vendor_files_raw" not in ss: ss.vendor_files_raw = {}
+            ss.vendor_files_pages[vname] = pages_dict
+            ss.vendor_files_raw[vname] = raw_dict
             ss.processed = False
             save_state_to_disk()
             st.rerun()
 
-        st.divider()
-        st.markdown("""<style>
-        [data-testid="stSidebar"] div[data-testid="stExpander"] summary p::before {
-            content: '';
-            display: inline-block;
-            width: 18px; height: 18px; margin-right: 8px;
-            background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2338BDF8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z'/%3E%3Cpath d='M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z'/%3E%3C/svg%3E") no-repeat center;
-            background-size: contain;
-            vertical-align: text-bottom;
-            filter: drop-shadow(0 0 4px rgba(56,189,248,0.6));
-        }
-        [data-testid="stSidebar"] div[data-testid="stExpander"] summary p {
-            color: #38BDF8 !important;
-            font-weight: 700 !important;
-            letter-spacing: 0.5px !important;
-        }
-        [data-testid="stSidebar"] div[data-testid="stExpander"],
-        [data-testid="stSidebar"] div[data-testid="stExpander"] details,
-        [data-testid="stSidebar"] div[data-testid="stExpander"] summary {
-            border-radius: 0px !important;
-        }
-        [data-testid="stSidebar"] div[data-testid="stExpander"] details {
-            border: 1px solid rgba(56, 189, 248, 0.3) !important;
-            background: rgba(56, 189, 248, 0.05) !important;
-        }
-        [data-testid="stSidebar"] div[data-testid="stExpander"] details:hover {
-            border-color: rgba(56, 189, 248, 0.6) !important;
-            box-shadow: 0 0 15px rgba(56, 189, 248, 0.1) !important;
-        }
-        [data-testid="stSidebar"] div[data-testid="stExpander"] summary:hover,
-        [data-testid="stSidebar"] div[data-testid="stExpander"] summary:focus {
-            background-color: transparent !important;
-        }
-        </style>""", unsafe_allow_html=True)
-        with st.expander("LLM Augmentation (optional)"):
-            st.caption("Compliance verdicts are always decided by deterministic rules for "
-                       "auditability. An Anthropic key only enriches messy-document "
-                       "classification and the executive narrative.")
-            api_key = st.text_input("Anthropic API key", type="password",
-                                    placeholder="sk-ant-…")
-            model = st.selectbox("Model", ["claude-sonnet-4-6", "claude-opus-4-8",
-                                           "claude-haiku-4-5-20251001"], index=0)
-            if api_key and not HAS_ANTHROPIC:
-                st.warning("`anthropic` package not installed — running in rule-only mode.")
         st.divider()
         ready = bool(ss.bid_text) and bool(ss.vendor_files)
         st.markdown('<div class="run-audit-marker"></div>', unsafe_allow_html=True)
@@ -2667,7 +2503,7 @@ margin-bottom: 24px; position: relative; overflow: hidden; display: flex; flex-d
         }
         </style>""", unsafe_allow_html=True)
         
-    return api_key, model, run_clicked
+    return run_clicked
 
 
 def go_to_audit() -> None:
@@ -3797,8 +3633,27 @@ def render_leaderboard(results: List[VendorResult]) -> None:
 
 def render_xai(xai: List[str], narrative: Optional[str]) -> None:
     if narrative:
-        st.markdown(f'<div class="xai"><b>Executive Summary (LLM)</b><br>{html.escape(narrative)}</div>',
-                    unsafe_allow_html=True)
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, rgba(56, 189, 248, 0.05) 0%, rgba(15, 23, 42, 0.8) 100%); 
+                    border: 1px solid rgba(56, 189, 248, 0.2); 
+                    border-left: 4px solid #38bdf8; 
+                    border-radius: 12px; 
+                    padding: 24px; 
+                    margin-bottom: 24px; 
+                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2), inset 0 0 20px rgba(56, 189, 248, 0.05);
+                    position: relative; overflow: hidden;">
+            <div style="position: absolute; top: 0; right: 0; padding: 12px; opacity: 0.1;">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="1"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px; position: relative; z-index: 1;">
+                <div style="width: 8px; height: 8px; border-radius: 50%; background: #38bdf8; box-shadow: 0 0 8px #38bdf8;"></div>
+                <h4 style="margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; color: #38bdf8; text-transform: uppercase; letter-spacing: 1px;">Argus Bid AI Executive Summary</h4>
+            </div>
+            <div style="color: #F8FAFC; font-size: 15px; line-height: 1.7; position: relative; z-index: 1; font-weight: 400;">
+                {html.escape(narrative)}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     icon_svg = """<div style="flex-shrink: 0; width: 32px; height: 32px; background: linear-gradient(135deg, rgba(59,130,246,0.15), rgba(16,185,129,0.15)); border: 1px solid rgba(59,130,246,0.25); border-radius: 8px; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(0,0,0,0.1);"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg></div>"""
     for line in xai:
         st.markdown(f'<div class="xai" style="padding: 18px 20px;"><div style="display:flex; gap:16px;">{icon_svg}<div style="flex: 1; padding-top: 3px;">{line}</div></div></div>', unsafe_allow_html=True)
@@ -3813,6 +3668,10 @@ def render_inventory(r: VendorResult) -> str:
         f"<td style='text-align:right;'>{read_pill(i.readability)}</td></tr>"
         for i in r.inventory)
     out += f'<div style="overflow-x: auto; width: 100%; -webkit-overflow-scrolling: touch;"><table class="invtable">{rows}</table></div>'
+    
+    has_unreadable = any(i.readability in (READ_LOW, READ_CORRUPT) for i in r.inventory)
+    if has_unreadable:
+        out += f'<div style="margin-top: 12px; font-size: 13px; color: #F59E0B; font-weight: 500; display: flex; align-items: center; gap: 8px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> Unreadable documents detected! Please refer to the "Double-Confirm Source Documents" section at the bottom to manually review them.</div>'
     return out
 
 
@@ -3823,6 +3682,8 @@ def render_maf(r: VendorResult) -> str:
     src = f" — source: {html.escape(r.maf.source_file)}" if r.maf.source_file else ""
     out += f'<div style="margin-bottom:8px; display:flex; align-items:center; gap:12px;">{maf_pill(r.maf.status)}<span style="color:var(--muted);font-size:12px; margin-top:2px;">{src}</span></div>'
     out += f'<div class="evidence {cls}">{html.escape(r.maf.evidence)}</div>'
+    if r.maf.source_file:
+        out += f'<div style="margin-top: 12px; font-size: 13px; color: #38BDF8; font-weight: 500; display: flex; align-items: center; gap: 8px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> Please refer to the "Double-Confirm Source Documents" section at the bottom to view the original PDF page.</div>'
     return out
 
 
@@ -4189,7 +4050,7 @@ def main() -> None:
             st.error(f"Error loading {filename}: {e}")
         return
 
-    api_key, model, run_clicked = render_sidebar()
+    run_clicked = render_sidebar()
 
     render_masthead()
 
@@ -4211,7 +4072,7 @@ def main() -> None:
         """, height=0)
         import time
         time.sleep(0.5) # Give the frontend a moment to process the closing animation
-        run_audit(api_key, model)
+        run_audit()
 
     ss = st.session_state
     if not ss.processed or not ss.results:
@@ -4238,7 +4099,39 @@ def main() -> None:
 
     eyebrow("04", "Vendor Audit Deep-Dive")
     render_drawers(ss.results)
+    
+    st.divider()
+    st.markdown("### 🔍 Double-Confirm Source Documents")
+    st.caption("Verify the engine's extraction or manually review unreadable documents.")
+    ordered = sorted(ss.results, key=lambda r: (r.disqualified, -(r.score)))
+    
+    for r in ordered:
+        # First, check if this vendor has any buttons to show
+        has_maf = bool(r.maf and r.maf.source_file)
+        unreadable_docs = [item for item in r.inventory if item.readability in (READ_LOW, READ_CORRUPT)]
+        
+        if has_maf or unreadable_docs:
+            st.markdown(f"<div style='font-family: \"JetBrains Mono\", monospace; font-size: 15px; font-weight: 700; color: #E2E8F0; margin-bottom: 12px; margin-top: 16px;'>{html.escape(r.name)}</div>", unsafe_allow_html=True)
+            cols = st.columns(3)
+            col_idx = 0
+            
+            # MAF Button
+            if has_maf:
+                with cols[col_idx % 3]:
+                    if st.button(f"Inspect MAF", key=f"dc_maf_{r.name}", use_container_width=True):
+                        show_double_confirm_dialog(r.name, r, "MAF Validation", r.maf.source_file, r.maf.evidence)
+                col_idx += 1
+                
+            # Unreadable documents
+            for item in unreadable_docs:
+                with cols[col_idx % 3]:
+                    if st.button(f"Inspect {item.filename}", key=f"dc_unred_{r.name}_{item.filename}", use_container_width=True):
+                        show_double_confirm_dialog(r.name, r, "Unreadable Document Check", item.filename, "")
+                col_idx += 1
+            
+            st.markdown("<div style='margin-bottom: 8px;'></div>", unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
     main()
+
