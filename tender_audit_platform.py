@@ -507,7 +507,7 @@ class VendorResult:
 class AuditEngine:
     """Rule-based, fully deterministic engine. Every verdict is reproducible
     and traceable to an explicit rule and a text snippet — the property a legal
-    tender evaluation must have. Subclassed by LLMAuditEngine (Section 7) which
+    tender evaluation must have. Subclassed by RAGAuditEngine (Section 7) which
     only augments classification and narrative, never the compliance verdicts.
     """
 
@@ -1970,7 +1970,7 @@ def run_audit() -> None:
     placeholder.markdown(render_audit_terminal(2, f"Analyzed {len(names)} vendor submissions.", 100.0), unsafe_allow_html=True)
     time.sleep(0.4)
     ss.xai = engine.rank_and_explain(results)
-    ss.narrative = engine.narrate(ss.bid, results) if isinstance(engine, LLMAuditEngine) else None
+    ss.narrative = engine.narrate(ss.bid, results) if isinstance(engine, RAGAuditEngine) else None
     time.sleep(0.4)
     
     # Step 3: Complete & Clear
