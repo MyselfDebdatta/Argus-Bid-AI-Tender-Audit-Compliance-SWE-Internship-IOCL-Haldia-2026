@@ -7,6 +7,7 @@
 ![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)
 ![Streamlit](https://img.shields.io/badge/Streamlit-%23FE4B4B.svg?style=for-the-badge&logo=streamlit&logoColor=white)
 ![Ollama](https://img.shields.io/badge/Ollama-%23000000.svg?style=for-the-badge&logo=ollama&logoColor=white)
+![Groq](https://img.shields.io/badge/Groq-%23F55036.svg?style=for-the-badge&logo=groq&logoColor=white)
 ![Render](https://img.shields.io/badge/Render-%2346E3B7.svg?style=for-the-badge&logo=render&logoColor=white)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
@@ -48,7 +49,7 @@ Argus Bid AI transforms procurement from a manual chore into an instant, determi
 ### ✨ Tech Innovations
 - **Deterministic Rule Engine:** Unlike generative AI that hallucinate, Argus Bid AI relies on strict logic to evaluate pass/fail compliance.
 - **Explainable Audit Trails (XAI):** Every single decision, rank, or disqualification is backed by a legally defensible, traceable text snippet.
-- **Local RAG Augmentation:** Powered by a locally-hosted Ollama (Llama 3) engine and ChromaDB vector store for highly secure, air-gapped semantic document classification and executive summarization.
+- **Hybrid RAG Augmentation (Ollama + Groq):** Employs an ultra-secure local Ollama Llama 3 engine for air-gapped processing, alongside an optional Groq cloud fallback for blazing-fast public deployments.
 - **Dynamic Multi-modal OCR:** Extracts text and tables effortlessly.
 
 ### 🧩 Core Product Modules
@@ -57,11 +58,11 @@ Argus Bid AI transforms procurement from a manual chore into an instant, determi
 - **Interactive Dashboard:** A premium, glassmorphic UI for uploading documents, running audits, and viewing explainable results.
 - **Exportable Reports:** Instantly export the entire dashboard analysis as a physical or PDF report for stakeholder review.
 
-### 🤖 Local RAG Engine (Ollama & Llama 3)
+### 🤖 Hybrid RAG Engine (Llama 3)
 
-The AI augmentation in Argus Bid AI is fully local and runs entirely on your machine. This ensures strict compliance with public sector data privacy standards (zero data leaves your system).
+The AI augmentation in Argus Bid AI is designed with a state-of-the-art hybrid architecture. It operates fully locally on your machine via **Ollama** to ensure strict compliance with public sector data privacy standards. However, when deployed to a cloud platform like Render, it intelligently falls back to the **Groq API** to process RAG extractions at lightning speed without needing a heavy cloud GPU.
 
-The platform uses a sophisticated Retrieval-Augmented Generation (RAG) pipeline powered by ChromaDB to do three key things:
+The platform uses a sophisticated Retrieval-Augmented Generation (RAG) pipeline powered by LangChain and ChromaDB to do three key things:
 
 #### 1. Dynamic Master BID Parsing
 Instead of relying on fragile exact-match searches, the engine uses multi-vector semantic search (with `k=20`) to dynamically parse your Master BID. It autonomously identifies every mandatory document, technical specification, and pre-qualification criteria from documents of any length.
@@ -70,7 +71,7 @@ Instead of relying on fragile exact-match searches, the engine uses multi-vector
 Vendors often upload documents that are poorly formatted, blurry, or strangely named. The platform uses Llama 3 as a "smart backup" to read the context of the document and correctly label it, ensuring it doesn't fail a vendor just because they named their authorization form "Scan_001.pdf".
 
 #### 3. Generating the Executive Summary Narrative
-After the platform has mathematically ranked the vendors, it feeds the results into the local Llama 3 model to generate a clean, human-readable "Executive Narrative." It essentially writes the final summary report for you in plain English.
+After the platform has mathematically ranked the vendors, it feeds the results into the Llama 3 model to generate a clean, human-readable "Executive Narrative." It essentially writes the final summary report for you in plain English.
 
 ---
 
@@ -90,17 +91,17 @@ After the platform has mathematically ranked the vendors, it feeds the results i
 | **Frontend & UI** | Streamlit | High-performance, pure-Python UI framework. |
 | | Custom CSS/JS | Premium glassmorphic styling, animations, and dynamic DOM manipulation. |
 | **Backend Logic** | Python 3.11 | Core logic, data processing, and document handling. |
-| **AI & NLP** | Ollama, Llama 3, ChromaDB | 100% local semantic document classification, vector search, and executive summarization. |
+| **AI & NLP** | LangChain, Ollama, Groq, ChromaDB | Intelligent local/cloud hybrid semantic document classification, multi-vector search, and executive summarization using the `llama3-70b` model. |
 | **Document Processing**| pdfplumber & pypdf | Robust text extraction from complex PDFs. |
 | **Deployment** | Render | Native Python Web Service for secure, iframe-free hosting. |
 
 ---
 
 ## 🏗️ Architecture (High Level)
-Argus Bid AI follows a streamlined, single-tier architecture optimized for data processing:
-1. **Presentation Layer:** A dynamic Streamlit frontend enhanced with custom HTML/JS/CSS for a premium user experience.
-2. **Processing Layer:** Python backend that orchestrates file parsing, chunking, embedding, and calls the local Ollama LLM for NLP tasks.
-3. **Evaluation Layer:** The deterministic rule engine that applies extracted Master BID constraints to Vendor text arrays, generating the XAI scoring matrix.
+Argus Bid AI follows a streamlined, single-tier architecture optimized for dynamic deployment and rigorous data processing:
+1. **Presentation Layer:** A dynamic Streamlit frontend enhanced with custom HTML/JS/CSS for a premium, responsive user experience.
+2. **Processing Layer:** A resilient Python backend that orchestrates file parsing, chunking, and embedding. It natively detects its environment to route NLP tasks either securely to local **Ollama** or rapidly to the **Groq Cloud API**.
+3. **Evaluation Layer:** The 100% deterministic rule engine that mathematically applies extracted Master BID constraints to Vendor text arrays, generating a legally defensible XAI scoring matrix.
 
 ---
 
@@ -108,11 +109,11 @@ Argus Bid AI follows a streamlined, single-tier architecture optimized for data 
 
 ```
 Argus-Bid-AI/
-├── tender_audit_platform.py    # Main Streamlit application and core logic
-├── requirements.txt            # Python dependencies
-├── render.yaml                 # Render Blueprint for 1-click deployment
+├── tender_audit_platform.py    # Main Streamlit application, RAG pipeline, and Core Logic
+├── requirements.txt            # Python dependencies (LangChain, ChromaDB, etc.)
+├── render.yaml                 # Render Blueprint for 1-click cloud deployment
 ├── run.bat                     # Windows startup script for local dev
-├── .gitignore                  # Ignored files and local caches
+├── .gitignore                  # Ignored files, local caches, and environments
 └── README.md                   # Project documentation
 ```
 
@@ -120,10 +121,11 @@ Argus-Bid-AI/
 
 ## 💻 Local Setup
 
+The system provides two modes of local execution depending on your hardware and network speed: **Fully Local (Ollama)** or **Cloud Accelerated (Groq)**.
+
 ### Prerequisites
 - [Python 3.8+](https://www.python.org/)
 - [Git](https://git-scm.com/)
-- Local installation of [Ollama](https://ollama.com/) with the 'llama3' model downloaded.
 
 ### 1. Clone the Repository
 ```bash
@@ -133,31 +135,46 @@ cd Argus-Bid-AI-Tender-Audit-Compliance
 
 ### 2. Install Dependencies & Run
 
-**Using the Batch Script (Windows):**
-Simply double-click the `run.bat` file. It will silently install dependencies and launch the platform.
-
-**Manual Setup (Mac/Linux/Windows):**
+First, ensure your dependencies are installed (or just use the `run.bat` script on Windows):
 ```bash
 pip install -r requirements.txt
-streamlit run tender_audit_platform.py
 ```
-The application will be accessible at `http://localhost:8501`.
+
+**Mode A: 100% Local Privacy (Ollama)**
+1. Install [Ollama](https://ollama.com/) on your machine.
+2. Open a terminal and download the Llama 3 model: `ollama run llama3`
+3. Leave Ollama running in the background.
+4. Launch the application: `streamlit run tender_audit_platform.py`
+*(The application will detect Ollama and run completely offline).*
+
+**Mode B: Cloud Accelerated (Groq API)**
+If you do not want to download the 4.7GB Ollama model, you can test the system locally using Groq's high-speed cloud.
+1. Create a free account at [console.groq.com](https://console.groq.com) and generate an API key.
+2. Set the hidden environment variable in your terminal:
+   ```cmd
+   setx GROQ_API_KEY "your-groq-key-here"
+   ```
+3. Restart your terminal, then run `run.bat` or `streamlit run tender_audit_platform.py`.
+*(The application will detect the environment variable and bypass Ollama, routing traffic to Groq).*
 
 ---
 
 ## 🔒 Security Notes
-- **Data Privacy:** Because the AI runs strictly locally via Ollama, zero data is ever transmitted to the cloud. All document parsing and deterministic auditing is done in-memory on your local machine.
+- **No Hardcoded Keys:** To protect against GitHub repository scraping bots, API keys are **never** hardcoded into the source code. The platform strictly relies on secure Environment Variables (`os.environ.get("GROQ_API_KEY")`).
+- **Data Privacy:** When running in Ollama mode, zero data is ever transmitted to the cloud. All document parsing, semantic RAG vectoring, and deterministic auditing is done directly in your machine's RAM.
 
 ---
 
 ## ☁️ Deployment (Render)
-This project is fully configured for a secure, native deployment on **Render**.
+This project is fully configured for a secure, native deployment on **Render**. Because free cloud tiers lack the RAM required to run local LLMs, the platform utilizes its Groq fallback when deployed.
 
 ### 1-Click Deploy
 1. Create an account at [Render.com](https://render.com).
 2. Go to your Dashboard -> **New +** -> **Blueprint**.
-3. Connect your GitHub repository.
-4. Render will detect the `render.yaml` file and instantly deploy the application as a native Python Web Service.
+3. Connect your GitHub repository. Render will automatically detect the `render.yaml` file.
+4. **Crucial Step:** In your Render Web Service settings, navigate to the **Environment Variables** tab.
+5. Add a variable named `GROQ_API_KEY` and paste in your free Groq API key.
+6. Deploy! The application will run as a native Python Web Service and utilize Groq for high-speed AI tasks.
 
 ---
 
