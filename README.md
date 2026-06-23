@@ -91,7 +91,7 @@ After the platform has mathematically ranked the vendors, it feeds the results i
 | **Frontend & UI** | Streamlit | High-performance, pure-Python UI framework. |
 | | Custom CSS/JS | Premium glassmorphic styling, animations, and dynamic DOM manipulation. |
 | **Backend Logic** | Python 3.11 | Core logic, data processing, and document handling. |
-| **AI & NLP** | LangChain, Ollama, Groq, ChromaDB | Intelligent local/cloud hybrid semantic document classification, multi-vector search, and executive summarization using the `llama-3.1-8b-instant` model. |
+| **AI & NLP** | LangChain, Ollama, Groq, ChromaDB | Intelligent local/cloud hybrid semantic document classification, multi-vector search, and executive summarization using a **Dual-Model Architecture** (`llama-3.3-70b-versatile` for complex ontology extraction, and `llama-3.1-8b-instant` for rapid classification). |
 | **Document Processing**| pdfplumber & pypdf | Robust text extraction from complex PDFs. |
 | **Deployment** | Render | Native Python Web Service for secure, iframe-free hosting. |
 

@@ -772,13 +772,16 @@ class RAGAuditEngine(AuditEngine):
                 try:
                     from langchain_groq import ChatGroq
                     self.llm = ChatGroq(model_name="llama-3.1-8b-instant", groq_api_key=groq_key, temperature=0.0)
+                    self.llm_smart = ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=groq_key, temperature=0.0)
                 except ImportError:
                     from langchain_community.llms import Ollama
                     self.llm = Ollama(model=self.model_name, temperature=0.0)
+                    self.llm_smart = self.llm
             else:
                 # No API key found: fallback to completely local, air-gapped Ollama model
                 from langchain_community.llms import Ollama
                 self.llm = Ollama(model=self.model_name, temperature=0.0)
+                self.llm_smart = self.llm
         except ImportError:
             pass
             
@@ -850,7 +853,7 @@ class RAGAuditEngine(AuditEngine):
             JSON Output:
             """
         )
-        chain = prompt | self.llm | StrOutputParser()
+        chain = prompt | getattr(self, "llm_smart", self.llm) | StrOutputParser()
         try:
             response = chain.invoke({"context": context})
             json_str = response[response.find('{'):response.rfind('}')+1]
