@@ -2091,9 +2091,14 @@ def show_double_confirm_dialog(vendor_name: str, r: VendorResult, title: str, fi
             # Snippets might be slightly modified or truncated, do a simple substring check if possible
             # or just fallback to page 1 if not easily found.
             # Clean up whitespace for better matching
-            clean_snippet = " ".join(snippet.split())
+            search_text = snippet
+            if "Extracted:" in snippet:
+                search_text = snippet.split("Extracted:")[-1].strip()
+                
+            clean_snippet = " ".join(search_text.split())
             clean_page = " ".join(page_text.split())
-            if clean_snippet in clean_page or (len(clean_snippet) > 20 and clean_snippet[:20] in clean_page):
+            
+            if clean_snippet and (clean_snippet in clean_page or (len(clean_snippet) > 20 and clean_snippet[:20] in clean_page)):
                 found_page = i
                 break
             
@@ -4147,14 +4152,13 @@ def main() -> None:
     eyebrow("04", "Vendor Audit Deep-Dive")
     render_drawers(ss.results)
     
-    st.divider()
-    st.markdown("### 🔍 Double-Confirm Source Documents")
-    st.caption("Verify the engine's extraction or manually review unreadable documents.")
+    eyebrow("05", "Double-Confirm Source")
+    st.markdown("<div style='margin-bottom: 20px; font-size: 14px; color: var(--muted);'>Verify the engine's extraction or manually review unreadable documents.</div>", unsafe_allow_html=True)
     ordered = sorted(ss.results, key=lambda r: (r.disqualified, -(r.score)))
     
     for r in ordered:
         # First, check if this vendor has any buttons to show
-        has_maf = bool(r.maf and r.maf.source_file)
+        has_maf = bool(r.maf and r.maf.status != MAF_MISSING)
         unreadable_docs = [item for item in r.inventory if item.readability in (READ_LOW, READ_CORRUPT)]
         
         if has_maf or unreadable_docs:
@@ -4166,7 +4170,8 @@ def main() -> None:
             if has_maf:
                 with cols[col_idx % 3]:
                     if st.button(f"Inspect MAF", key=f"dc_maf_{r.name}", use_container_width=True):
-                        show_double_confirm_dialog(r.name, r, "MAF Validation", r.maf.source_file, r.maf.evidence)
+                        src_file = r.maf.source_file if r.maf.source_file else "Unknown Source"
+                        show_double_confirm_dialog(r.name, r, "MAF Validation", src_file, r.maf.evidence)
                 col_idx += 1
                 
             # Unreadable documents
