@@ -40,6 +40,12 @@ import re
 import time
 import base64
 import logging
+import warnings
+
+# Suppress harmless LangChain and Pydantic deprecation warnings from cluttering the terminal
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -800,8 +806,8 @@ class RAGAuditEngine(AuditEngine):
 
     def parse_master_bid(self, bid_text: str) -> Dict[str, Any]:
         if not self.llm: return {"tender_id": "UNKNOWN", "mandatory_docs": [], "pqc": [], "mandatory_specs": [], "preferred_specs": []}
-        from langchain.prompts import PromptTemplate
-        from langchain.chains import LLMChain
+        from langchain_core.prompts import PromptTemplate
+        from langchain_core.output_parsers import StrOutputParser
         
         vs = self._create_vectorstore(bid_text, "master_bid")
         relevant_docs = vs.similarity_search("mandatory technical specifications preferred requirements pre-qualification criteria MAF documents needed", k=20)
@@ -832,9 +838,9 @@ class RAGAuditEngine(AuditEngine):
             JSON Output:
             """
         )
-        chain = LLMChain(llm=self.llm, prompt=prompt)
+        chain = prompt | self.llm | StrOutputParser()
         try:
-            response = chain.run(context=context)
+            response = chain.invoke({"context": context})
             json_str = response[response.find('{'):response.rfind('}')+1]
             return json.loads(json_str)
         except Exception:
@@ -842,8 +848,8 @@ class RAGAuditEngine(AuditEngine):
 
     def validate_maf(self, inventory: List[InventoryItem], files: Dict[str, str], tender_id: str) -> MAFResult:
         if not self.llm: return MAFResult(status=MAF_MISSING, evidence="LLM not initialized.")
-        from langchain.prompts import PromptTemplate
-        from langchain.chains import LLMChain
+        from langchain_core.prompts import PromptTemplate
+        from langchain_core.output_parsers import StrOutputParser
 
         vs = self._create_multi_vectorstore(files, "temp_maf_search")
         if not vs: return MAFResult(status=MAF_MISSING, evidence="Vectorstore not initialized.")
@@ -873,9 +879,9 @@ class RAGAuditEngine(AuditEngine):
             }}
             """
         )
-        chain = LLMChain(llm=self.llm, prompt=prompt)
+        chain = prompt | self.llm | StrOutputParser()
         try:
-            response = chain.run(context=context, tender_id=tender_id)
+            response = chain.invoke({"context": context, "tender_id": tender_id})
             json_str = response[response.find('{'):response.rfind('}')+1]
             data = json.loads(json_str)
             
@@ -893,8 +899,8 @@ class RAGAuditEngine(AuditEngine):
     def evaluate_pqc(self, pqc_reqs: List[Dict[str, Any]], vendor_text: str) -> List[PQCResult]:
         if not self.llm: return []
         results = []
-        from langchain.prompts import PromptTemplate
-        from langchain.chains import LLMChain
+        from langchain_core.prompts import PromptTemplate
+        from langchain_core.output_parsers import StrOutputParser
         
         vs = self._create_vectorstore(vendor_text, "vendor_pqc")
 
@@ -919,9 +925,9 @@ class RAGAuditEngine(AuditEngine):
                 }}
                 """
             )
-            chain = LLMChain(llm=self.llm, prompt=prompt)
+            chain = prompt | self.llm | StrOutputParser()
             try:
-                response = chain.run(req=json.dumps(req), context=context)
+                response = chain.invoke({"req": json.dumps(req), "context": context})
                 json_str = response[response.find('{'):response.rfind('}')+1]
                 data = json.loads(json_str)
                 provided = data.get("provided_value", "[NOT FOUND]")
@@ -936,8 +942,8 @@ class RAGAuditEngine(AuditEngine):
 
     def check_missing_docs(self, mandatory_docs: List[str], vendor_text: str, inventory: List[InventoryItem]) -> List[str]:
         if not self.llm or not mandatory_docs: return []
-        from langchain.prompts import PromptTemplate
-        from langchain.chains import LLMChain
+        from langchain_core.prompts import PromptTemplate
+        from langchain_core.output_parsers import StrOutputParser
         
         inventory_str = "\n".join([f"- {i.filename}: {i.doc_type}" for i in inventory])
         
@@ -960,9 +966,9 @@ class RAGAuditEngine(AuditEngine):
             }}
             """
         )
-        chain = LLMChain(llm=self.llm, prompt=prompt)
+        chain = prompt | self.llm | StrOutputParser()
         try:
-            response = chain.run(mandatory_docs=json.dumps(mandatory_docs), inventory_str=inventory_str)
+            response = chain.invoke({"mandatory_docs": json.dumps(mandatory_docs), "inventory_str": inventory_str})
             json_str = response[response.find('{'):response.rfind('}')+1]
             data = json.loads(json_str)
             return data.get("missing_documents", [])
@@ -971,8 +977,8 @@ class RAGAuditEngine(AuditEngine):
 
     def classify_document(self, filename: str, text: str) -> str:
         if not self.llm: return super().classify_document(filename, text)
-        from langchain.prompts import PromptTemplate
-        from langchain.chains import LLMChain
+        from langchain_core.prompts import PromptTemplate
+        from langchain_core.output_parsers import StrOutputParser
         
         prompt = PromptTemplate(
             input_variables=["filename", "text"],
@@ -988,17 +994,17 @@ class RAGAuditEngine(AuditEngine):
             Provide ONLY the exact document type name and nothing else.
             Document Type:"""
         )
-        chain = LLMChain(llm=self.llm, prompt=prompt)
+        chain = prompt | self.llm | StrOutputParser()
         try:
-            doc_type = chain.run(filename=filename, text=text[:2000]).strip()
+            doc_type = chain.invoke({"filename": filename, "text": text[:2000]}).strip()
             return doc_type.strip('"\'')
         except Exception:
             return "Unclassified Document"
 
     def detect_deviations(self, vendor_text: str) -> List[str]:
         if not self.llm: return []
-        from langchain.prompts import PromptTemplate
-        from langchain.chains import LLMChain
+        from langchain_core.prompts import PromptTemplate
+        from langchain_core.output_parsers import StrOutputParser
         
         prompt = PromptTemplate(
             input_variables=["text"],
@@ -1015,9 +1021,9 @@ class RAGAuditEngine(AuditEngine):
             }}
             """
         )
-        chain = LLMChain(llm=self.llm, prompt=prompt)
+        chain = prompt | self.llm | StrOutputParser()
         try:
-            response = chain.run(text=vendor_text[:4000])
+            response = chain.invoke({"text": vendor_text[:4000]})
             json_str = response[response.find('{'):response.rfind('}')+1]
             data = json.loads(json_str)
             return data.get("deviations", [])[:6]
@@ -1026,8 +1032,8 @@ class RAGAuditEngine(AuditEngine):
 
     def extract_spec(self, spec: Dict[str, Any], vendor_text: str, mandatory: bool) -> SpecResult:
         if not self.llm: return SpecResult(spec.get("label", ""), str(spec.get("required_value", "")), "[DATA LACKING]", "lacking", mandatory)
-        from langchain.prompts import PromptTemplate
-        from langchain.chains import LLMChain
+        from langchain_core.prompts import PromptTemplate
+        from langchain_core.output_parsers import StrOutputParser
 
         vs = self._create_vectorstore(vendor_text, "temp_vendor_search")
         query = f"{spec.get('label', '')} {spec.get('param', '')}"
@@ -1050,9 +1056,9 @@ class RAGAuditEngine(AuditEngine):
             }}
             """
         )
-        chain = LLMChain(llm=self.llm, prompt=prompt)
+        chain = prompt | self.llm | StrOutputParser()
         try:
-            response = chain.run(spec=json.dumps(spec), context=context)
+            response = chain.invoke({"spec": json.dumps(spec), "context": context})
             json_str = response[response.find('{'):response.rfind('}')+1]
             data = json.loads(json_str)
             required_val = str(spec.get("required_value", "Required"))
@@ -1070,8 +1076,8 @@ class RAGAuditEngine(AuditEngine):
 
     def narrate(self, bid: Dict[str, Any], results: List[VendorResult]) -> Optional[str]:
         if not self.llm: return None
-        from langchain.prompts import PromptTemplate
-        from langchain.chains import LLMChain
+        from langchain_core.prompts import PromptTemplate
+        from langchain_core.output_parsers import StrOutputParser
         
         ranked = sorted([r for r in results if not r.disqualified], key=lambda x: x.score, reverse=True)
         dq = [r for r in results if r.disqualified]
@@ -1089,9 +1095,9 @@ class RAGAuditEngine(AuditEngine):
             
             Executive Summary:"""
         )
-        chain = LLMChain(llm=self.llm, prompt=prompt)
+        chain = prompt | self.llm | StrOutputParser()
         try:
-            return chain.run(context=json.dumps(ctx, indent=2))
+            return chain.invoke({"context": json.dumps(ctx, indent=2)})
         except Exception:
             return None
 
