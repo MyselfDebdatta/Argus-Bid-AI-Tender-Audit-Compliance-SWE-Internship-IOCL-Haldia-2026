@@ -786,14 +786,14 @@ class RAGAuditEngine(AuditEngine):
             pass # Gracefully degrade if Langchain is not installed
 
     def _create_vectorstore(self, text: str, store_id: str):
-        if not self.embeddings: return None
+        if not getattr(self, "embeddings", None) or not getattr(self, "Chroma", None): return None
         chunks = self.text_splitter.split_text(text)
         vectorstore = self.Chroma.from_texts(chunks, self.embeddings, collection_name=store_id)
         self.vectorstores[store_id] = vectorstore
         return vectorstore
 
     def _create_multi_vectorstore(self, files: Dict[str, str], store_id: str):
-        if not self.embeddings: return None
+        if not getattr(self, "embeddings", None) or not getattr(self, "Chroma", None): return None
         chunks = []
         metadatas = []
         for fname, text in files.items():
@@ -810,8 +810,11 @@ class RAGAuditEngine(AuditEngine):
         from langchain_core.output_parsers import StrOutputParser
         
         vs = self._create_vectorstore(bid_text, "master_bid")
-        relevant_docs = vs.similarity_search("mandatory technical specifications preferred requirements pre-qualification criteria MAF documents needed", k=20)
-        context = "\n\n".join([d.page_content for d in relevant_docs])
+        if vs:
+            relevant_docs = vs.similarity_search("mandatory technical specifications preferred requirements pre-qualification criteria MAF documents needed", k=20)
+            context = "\n\n".join([d.page_content for d in relevant_docs])
+        else:
+            context = bid_text[:25000] # Fallback: inject raw text up to ~6k tokens
 
         prompt = PromptTemplate(
             input_variables=["context"],
@@ -852,13 +855,13 @@ class RAGAuditEngine(AuditEngine):
         from langchain_core.output_parsers import StrOutputParser
 
         vs = self._create_multi_vectorstore(files, "temp_maf_search")
-        if not vs: return MAFResult(status=MAF_MISSING, evidence="Vectorstore not initialized.")
-        
-        relevant_docs = vs.similarity_search("Manufacturer Authorization Form MAF OEM Letter", k=4)
-        if not relevant_docs:
-            return MAFResult(status=MAF_MISSING, evidence="Could not locate any Manufacturer Authorization related documents.")
-            
-        context = "\n\n".join([f"Source File: {d.metadata.get('source')}\nContent:\n{d.page_content}" for d in relevant_docs])
+        if vs:
+            relevant_docs = vs.similarity_search("Manufacturer Authorization Form MAF OEM Letter", k=4)
+            if not relevant_docs:
+                return MAFResult(status=MAF_MISSING, evidence="Could not locate any Manufacturer Authorization related documents.")
+            context = "\n\n".join([f"Source File: {d.metadata.get('source')}\nContent:\n{d.page_content}" for d in relevant_docs])
+        else:
+            context = "\n\n".join([f"Source File: {n}\n{t[:5000]}" for n, t in files.items()])[:25000]
 
         prompt = PromptTemplate(
             input_variables=["context", "tender_id"],
@@ -906,8 +909,11 @@ class RAGAuditEngine(AuditEngine):
 
         for req in pqc_reqs:
             query = f"{req['label']} {req.get('key', '')} requirements"
-            relevant_docs = vs.similarity_search(query, k=5)
-            context = "\n\n".join([d.page_content for d in relevant_docs])
+            if vs:
+                relevant_docs = vs.similarity_search(query, k=5)
+                context = "\n\n".join([d.page_content for d in relevant_docs])
+            else:
+                context = vendor_text[:25000]
 
             prompt = PromptTemplate(
                 input_variables=["req", "context"],
@@ -1037,8 +1043,12 @@ class RAGAuditEngine(AuditEngine):
 
         vs = self._create_vectorstore(vendor_text, "temp_vendor_search")
         query = f"{spec.get('label', '')} {spec.get('param', '')}"
-        relevant_docs = vs.similarity_search(query, k=5)
-        context = "\n\n".join([d.page_content for d in relevant_docs])
+        
+        if vs:
+            relevant_docs = vs.similarity_search(query, k=5)
+            context = "\n\n".join([d.page_content for d in relevant_docs])
+        else:
+            context = vendor_text[:25000]
 
         prompt = PromptTemplate(
             input_variables=["spec", "context"],
