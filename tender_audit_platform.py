@@ -944,15 +944,22 @@ class RAGAuditEngine(AuditEngine):
                 """
             )
             chain = prompt | self.llm | StrOutputParser()
-            try:
-                response = chain.invoke({"req": json.dumps(req), "context": context})
-                json_str = response[response.find('{'):response.rfind('}')+1]
-                data = json.loads(json_str)
-                provided = data.get("provided_value", "[NOT FOUND]")
-                passed = data.get("meets_threshold", False)
-                req_val = f"≥ {req.get('threshold', '')} {req.get('unit', '')}" if req.get('threshold') else "Required"
-                results.append(PQCResult(req["label"], req_val, provided, passed, req.get("section", "")))
-            except Exception:
+            import time
+            success = False
+            for attempt in range(4):
+                try:
+                    response = chain.invoke({"req": json.dumps(req), "context": context})
+                    json_str = response[response.find('{'):response.rfind('}')+1]
+                    data = json.loads(json_str)
+                    provided = data.get("provided_value", "[NOT FOUND]")
+                    passed = data.get("meets_threshold", False)
+                    req_val = f"≥ {req.get('threshold', '')} {req.get('unit', '')}" if req.get('threshold') else "Required"
+                    results.append(PQCResult(req["label"], req_val, provided, passed, req.get("section", "")))
+                    success = True
+                    break
+                except Exception:
+                    time.sleep(1.5 * (attempt + 1))
+            if not success:
                 req_val = f"≥ {req.get('threshold', '')} {req.get('unit', '')}" if req.get('threshold') else "Required"
                 results.append(PQCResult(req["label"], req_val, "[ERROR]", False, req.get("section", "")))
                 
@@ -1079,22 +1086,26 @@ class RAGAuditEngine(AuditEngine):
             """
         )
         chain = prompt | self.llm | StrOutputParser()
-        try:
-            response = chain.invoke({"spec": json.dumps(spec), "context": context})
-            json_str = response[response.find('{'):response.rfind('}')+1]
-            data = json.loads(json_str)
-            required_val = str(spec.get("required_value", "Required"))
-            if "unit" in spec: required_val += f" {spec['unit']}"
-            return SpecResult(
-                param=spec.get("label", ""),
-                required=required_val,
-                provided=data.get("provided_value", "[DATA LACKING]"),
-                status=data.get("status", "lacking"),
-                mandatory=mandatory
-            )
-        except Exception as e:
-            required_val = str(spec.get("required_value", "Required"))
-            return SpecResult(spec.get("label", ""), required_val, "[DATA LACKING]", "lacking", mandatory)
+        import time
+        for attempt in range(4):
+            try:
+                response = chain.invoke({"spec": json.dumps(spec), "context": context})
+                json_str = response[response.find('{'):response.rfind('}')+1]
+                data = json.loads(json_str)
+                required_val = str(spec.get("required_value", "Required"))
+                if "unit" in spec: required_val += f" {spec['unit']}"
+                return SpecResult(
+                    param=spec.get("label", ""),
+                    required=required_val,
+                    provided=data.get("provided_value", "[DATA LACKING]"),
+                    status=data.get("status", "lacking"),
+                    mandatory=mandatory
+                )
+            except Exception:
+                time.sleep(1.5 * (attempt + 1))
+                
+        required_val = str(spec.get("required_value", "Required"))
+        return SpecResult(spec.get("label", ""), required_val, "[DATA LACKING]", "lacking", mandatory)
 
     def narrate(self, bid: Dict[str, Any], results: List[VendorResult]) -> Optional[str]:
         if not self.llm: return None
@@ -2073,46 +2084,70 @@ def view_documents_dialog(title: str, files_dict: Dict[str, str]) -> None:
 
 @dialog_decorator("🔍 Double-Confirm Source", width="large")
 def show_double_confirm_dialog(vendor_name: str, r: VendorResult, title: str, filename: str, snippet: str = "") -> None:
-    st.markdown(f"### {title} for {vendor_name}")
-    st.caption("Inspect the original PDF rendering to verify.")
+    st.markdown("""
+        <style>
+        .dc-modal-title { font-family: 'JetBrains Mono', monospace; font-size: 1.2rem; font-weight: 700; color: #E2E8F0; margin-bottom: 8px; }
+        .dc-modal-subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 16px; }
+        .dc-modal-panel { background: rgba(10, 15, 26, 0.4); border: 1px solid #1E293B; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+        .dc-modal-label { color: #8B9BB4; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-bottom: 8px; }
+        .dc-modal-text { color: #E2E8F0; font-family: 'JetBrains Mono', monospace; font-size: 0.95rem; white-space: pre-wrap; }
+        </style>
+    """, unsafe_allow_html=True)
     
-    st.markdown(f"**File:** {filename}")
+    st.markdown(f"<div class='dc-modal-title'>{title} for {html.escape(vendor_name)}</div>", unsafe_allow_html=True)
+    st.markdown("<div class='dc-modal-subtitle'>Inspect the original PDF rendering to verify.</div>", unsafe_allow_html=True)
+    
+    vendor_pages = st.session_state.get("vendor_files_pages", {}).get(vendor_name, {})
+    vendor_raw = st.session_state.get("vendor_files_raw", {}).get(vendor_name, {})
+    
+    actual_filename = filename
+    if filename not in vendor_pages and vendor_pages:
+        matched = False
+        for k in vendor_pages.keys():
+            if filename.lower() in k.lower() or k.lower() in filename.lower():
+                actual_filename = k
+                matched = True
+                break
+        if not matched:
+            actual_filename = list(vendor_pages.keys())[0]
+
+    pages = vendor_pages.get(actual_filename, [])
+    raw_bytes = vendor_raw.get(actual_filename, b"")
+    
+    st.markdown(f"<div class='dc-modal-panel'><div class='dc-modal-label'>Source File</div><div class='dc-modal-text'>{html.escape(actual_filename)}</div></div>", unsafe_allow_html=True)
+    
+    search_text = ""
     if snippet:
-        st.markdown(f"**Extracted Snippet:**\n```\n{snippet}\n```")
+        search_text = snippet
+        if "Extracted:" in snippet:
+            parts = snippet.split("Extracted:")
+            reasoning = parts[0].strip()
+            search_text = parts[-1].strip()
+            st.markdown(f"<div class='dc-modal-panel'><div class='dc-modal-label'>LLM Reasoning</div><div class='dc-modal-text' style='color: #4ADE80;'>{html.escape(reasoning)}</div><div class='dc-modal-label' style='margin-top: 12px;'>Extracted Snippet</div><div class='dc-modal-text'>{html.escape(search_text)}</div></div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='dc-modal-panel'><div class='dc-modal-label'>Extracted Snippet / Evidence</div><div class='dc-modal-text'>{html.escape(snippet)}</div></div>", unsafe_allow_html=True)
     else:
-        st.markdown("**Status:** Flagged for manual human review (Low-Quality or Corrupted).")
-    
-    pages = st.session_state.get("vendor_files_pages", {}).get(vendor_name, {}).get(filename, [])
-    raw_bytes = st.session_state.get("vendor_files_raw", {}).get(vendor_name, {}).get(filename, b"")
+        st.markdown("<div class='dc-modal-panel'><div class='dc-modal-label'>Status</div><div class='dc-modal-text' style='color: #F59E0B;'>Flagged for manual human review (Low-Quality or Corrupted).</div></div>", unsafe_allow_html=True)
     
     found_page = -1
-    if snippet:
+    if snippet and search_text:
+        clean_snippet = " ".join(search_text.split())
         for i, page_text in enumerate(pages):
-            # Snippets might be slightly modified or truncated, do a simple substring check if possible
-            # or just fallback to page 1 if not easily found.
-            # Clean up whitespace for better matching
-            search_text = snippet
-            if "Extracted:" in snippet:
-                search_text = snippet.split("Extracted:")[-1].strip()
-                
-            clean_snippet = " ".join(search_text.split())
             clean_page = " ".join(page_text.split())
-            
-            if clean_snippet and (clean_snippet in clean_page or (len(clean_snippet) > 20 and clean_snippet[:20] in clean_page)):
+            if clean_snippet and (clean_snippet in clean_page or (len(clean_snippet) > 20 and clean_snippet[:20] in clean_page) or (len(clean_snippet) > 40 and clean_snippet[10:40] in clean_page)):
                 found_page = i
                 break
             
     if found_page == -1 and pages:
-        # Fallback to first page
         found_page = 0
             
     if found_page >= 0 and raw_bytes and HAS_PDFPLUMBER:
-        st.success(f"Rendering Page {found_page + 1}...")
+        st.markdown(f"<div style='margin-top: 16px; margin-bottom: 8px; color: #38BDF8; font-weight: 600;'>Rendering Page {found_page + 1}...</div>", unsafe_allow_html=True)
         try:
             with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
                 page = pdf.pages[found_page]
                 im = page.to_image(resolution=150)
-                st.image(im.original, caption=f"Page {found_page + 1}")
+                st.image(im.original)
         except Exception as e:
             st.error(f"Failed to render page image: {e}")
     else:
@@ -4157,27 +4192,25 @@ def main() -> None:
     ordered = sorted(ss.results, key=lambda r: (r.disqualified, -(r.score)))
     
     for r in ordered:
-        # First, check if this vendor has any buttons to show
         has_maf = bool(r.maf and r.maf.status != MAF_MISSING)
         unreadable_docs = [item for item in r.inventory if item.readability in (READ_LOW, READ_CORRUPT)]
         
         if has_maf or unreadable_docs:
-            st.markdown(f"<div style='font-family: \"JetBrains Mono\", monospace; font-size: 15px; font-weight: 700; color: #E2E8F0; margin-bottom: 12px; margin-top: 16px;'>{html.escape(r.name)}</div>", unsafe_allow_html=True)
-            cols = st.columns(3)
-            col_idx = 0
-            
-            # MAF Button
-            if has_maf:
-                with cols[col_idx % 3]:
-                    if st.button(f"Inspect MAF", key=f"dc_maf_{r.name}", use_container_width=True):
-                        src_file = r.maf.source_file if r.maf.source_file else "Unknown Source"
-                        show_double_confirm_dialog(r.name, r, "MAF Validation", src_file, r.maf.evidence)
-                col_idx += 1
+            with st.container(border=True):
+                st.markdown(f"<div style='font-family: \"JetBrains Mono\", monospace; font-size: 15px; font-weight: 700; color: #60A5FA; margin-bottom: 8px;'>{html.escape(r.name)}</div>", unsafe_allow_html=True)
+                cols = st.columns(3)
+                col_idx = 0
                 
-            # Unreadable documents
-            for item in unreadable_docs:
-                with cols[col_idx % 3]:
-                    if st.button(f"Inspect {item.filename}", key=f"dc_unred_{r.name}_{item.filename}", use_container_width=True):
+                if has_maf:
+                    with cols[col_idx % 3]:
+                        if st.button(f"🔍 Inspect MAF", key=f"dc_maf_{r.name}", use_container_width=True):
+                            src_file = r.maf.source_file if r.maf.source_file else "Unknown Source"
+                            show_double_confirm_dialog(r.name, r, "MAF Validation", src_file, r.maf.evidence)
+                    col_idx += 1
+                    
+                for item in unreadable_docs:
+                    with cols[col_idx % 3]:
+                        if st.button(f"🔍 Inspect {item.filename}", key=f"dc_unred_{r.name}_{item.filename}", use_container_width=True):
                         show_double_confirm_dialog(r.name, r, "Unreadable Document Check", item.filename, "")
                 col_idx += 1
             
