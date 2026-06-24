@@ -927,7 +927,7 @@ class RAGAuditEngine(AuditEngine):
                 else:
                     return MAFResult(status=MAF_INVALID, evidence=f"Invalid MAF. {data.get('reasoning')}", source_file=src)
             except Exception:
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(20)
         return MAFResult(status=MAF_INVALID, evidence="Failed to evaluate MAF: Persistent LLM failure.", source_file="")
 
     def evaluate_pqc(self, pqc_reqs: List[Dict[str, Any]], vendor_text: str) -> List[PQCResult]:
@@ -976,7 +976,7 @@ class RAGAuditEngine(AuditEngine):
                     success = True
                     break
                 except Exception:
-                    time.sleep(1.5 * (attempt + 1))
+                    time.sleep(20)
             if not success:
                 req_val = f"≥ {req.get('threshold', '')} {req.get('unit', '')}" if req.get('threshold') else "Required"
                 results.append(PQCResult(req["label"], req_val, "[ERROR]", False, req.get("section", "")))
@@ -1046,7 +1046,7 @@ class RAGAuditEngine(AuditEngine):
                 doc_type = chain.invoke({"filename": filename, "text": text[:2000]}).strip()
                 return doc_type.strip('"\'')
             except Exception:
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(20)
         return "Unclassified Document"
 
     def detect_deviations(self, vendor_text: str) -> List[str]:
@@ -1126,7 +1126,7 @@ class RAGAuditEngine(AuditEngine):
                     mandatory=mandatory
                 )
             except Exception:
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(20)
                 
         required_val = str(spec.get("required_value", "Required"))
         return SpecResult(spec.get("label", ""), required_val, "[DATA LACKING]", "lacking", mandatory)
@@ -2186,8 +2186,11 @@ def show_double_confirm_dialog(vendor_name: str, r: VendorResult, title: str, fi
         try:
             with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
                 page = pdf.pages[found_page]
-                im = page.to_image(resolution=150)
+                im = page.to_image(resolution=72)
                 st.image(im.original)
+                del im
+            import gc
+            gc.collect()
         except Exception as e:
             st.error(f"Failed to render page image: {e}")
     else:
@@ -4243,14 +4246,14 @@ def main() -> None:
                 
                 if has_maf:
                     with cols[col_idx % 3]:
-                        if st.button(f"🔍 Inspect MAF", key=f"dc_maf_{r.name}", use_container_width=True, type="primary"):
+                        if st.button(f"Inspect MAF", key=f"dc_maf_{r.name}", use_container_width=True, type="primary"):
                             src_file = r.maf.source_file if r.maf.source_file else "Unknown Source"
                             show_double_confirm_dialog(r.name, r, "MAF Validation", src_file, r.maf.evidence)
                     col_idx += 1
                     
                 for item in unreadable_docs:
                     with cols[col_idx % 3]:
-                        if st.button(f"🔍 Inspect {item.filename}", key=f"dc_unred_{r.name}_{item.filename}", use_container_width=True, type="primary"):
+                        if st.button(f"Inspect {item.filename}", key=f"dc_unred_{r.name}_{item.filename}", use_container_width=True, type="primary"):
                             show_double_confirm_dialog(r.name, r, "Unreadable Document Check", item.filename, "")
                     col_idx += 1
             
