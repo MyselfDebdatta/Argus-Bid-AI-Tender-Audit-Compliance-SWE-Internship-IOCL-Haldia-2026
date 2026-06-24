@@ -4211,8 +4211,8 @@ def main() -> None:
                 for item in unreadable_docs:
                     with cols[col_idx % 3]:
                         if st.button(f"🔍 Inspect {item.filename}", key=f"dc_unred_{r.name}_{item.filename}", use_container_width=True):
-                        show_double_confirm_dialog(r.name, r, "Unreadable Document Check", item.filename, "")
-                col_idx += 1
+                            show_double_confirm_dialog(r.name, r, "Unreadable Document Check", item.filename, "")
+                    col_idx += 1
             
             st.markdown("<div style='margin-bottom: 8px;'></div>", unsafe_allow_html=True)
 
