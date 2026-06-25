@@ -772,7 +772,7 @@ class RAGAuditEngine(AuditEngine):
                 try:
                     from langchain_groq import ChatGroq
                     self.llm = ChatGroq(model_name="llama-3.1-8b-instant", groq_api_key=groq_key, temperature=0.0)
-                    self.llm_smart = ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=groq_key, temperature=0.0)
+                    self.llm_smart = ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=groq_key, temperature=0.0, max_retries=0)
                 except ImportError:
                     from langchain_community.llms import Ollama
                     self.llm = Ollama(model=self.model_name, temperature=0.0)
@@ -841,10 +841,10 @@ class RAGAuditEngine(AuditEngine):
         
         vs = self._create_vectorstore(bid_text, "master_bid")
         if vs:
-            relevant_docs = vs.similarity_search("mandatory technical specifications preferred requirements pre-qualification criteria MAF documents needed", k=6)
+            relevant_docs = vs.similarity_search("mandatory technical specifications preferred requirements pre-qualification criteria MAF documents needed", k=20)
             context = "\n\n".join([d.page_content for d in relevant_docs])
         else:
-            context = bid_text[:8000] # Fallback: inject raw text safely within TPM limits
+            context = bid_text[:25000] # Fallback: inject raw text up to ~6k tokens
 
         prompt = PromptTemplate(
             input_variables=["context"],
