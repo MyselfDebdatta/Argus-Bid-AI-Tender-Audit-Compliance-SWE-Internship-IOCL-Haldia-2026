@@ -959,7 +959,7 @@ class RAGAuditEngine(AuditEngine):
         for req in pqc_reqs:
             query = f"{req['label']} {req.get('key', '')} requirements"
             if vs:
-                relevant_docs = vs.similarity_search(query, k=12)
+                relevant_docs = vs.similarity_search(query, k=6)
                 context = "\n\n".join([d.page_content for d in relevant_docs])
             else:
                 context = vendor_text[:25000]
@@ -1109,7 +1109,7 @@ class RAGAuditEngine(AuditEngine):
         query = f"{spec.get('label', '')} {spec.get('param', '')}"
         
         if vs:
-            relevant_docs = vs.similarity_search(query, k=12)
+            relevant_docs = vs.similarity_search(query, k=6)
             context = "\n\n".join([d.page_content for d in relevant_docs])
         else:
             context = vendor_text[:25000]
