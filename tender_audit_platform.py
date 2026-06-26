@@ -803,13 +803,17 @@ class RAGAuditEngine(AuditEngine):
             pass # Gracefully degrade if heavy vector packages are not installed
 
     def _create_vectorstore(self, text: str, store_id: str):
+        real_id = f"{store_id}_{hash(text)}"
+        if real_id in self.vectorstores: return self.vectorstores[real_id]
         if not getattr(self, "embeddings", None) or not getattr(self, "Chroma", None): return None
         chunks = self.text_splitter.split_text(text)
-        vectorstore = self.Chroma.from_texts(chunks, self.embeddings, collection_name=store_id)
-        self.vectorstores[store_id] = vectorstore
+        vectorstore = self.Chroma.from_texts(chunks, self.embeddings, collection_name=f"c_{abs(hash(real_id))}")
+        self.vectorstores[real_id] = vectorstore
         return vectorstore
 
     def _create_multi_vectorstore(self, files: Dict[str, str], store_id: str):
+        real_id = f"{store_id}_{hash(tuple(files.keys()))}"
+        if real_id in self.vectorstores: return self.vectorstores[real_id]
         if not getattr(self, "embeddings", None) or not getattr(self, "Chroma", None): return None
         chunks = []
         metadatas = []
@@ -817,8 +821,8 @@ class RAGAuditEngine(AuditEngine):
             file_chunks = self.text_splitter.split_text(text)
             chunks.extend(file_chunks)
             metadatas.extend([{"source": fname}] * len(file_chunks))
-        vectorstore = self.Chroma.from_texts(chunks, self.embeddings, metadatas=metadatas, collection_name=store_id)
-        self.vectorstores[store_id] = vectorstore
+        vectorstore = self.Chroma.from_texts(chunks, self.embeddings, metadatas=metadatas, collection_name=f"c_{abs(hash(real_id))}")
+        self.vectorstores[real_id] = vectorstore
         return vectorstore
 
     def _extract_json(self, text: str) -> dict:
@@ -880,7 +884,8 @@ class RAGAuditEngine(AuditEngine):
                 response = chain_smart.invoke({"context": context})
                 return self._extract_json(response)
             except Exception as e:
-                time.sleep(20)
+                if "429" in str(e) or "RateLimit" in type(e).__name__:
+                    time.sleep(20)
                 
         return {"tender_id": "UNKNOWN", "mandatory_docs": [], "pqc": [], "mandatory_specs": [], "preferred_specs": []}
 
@@ -938,8 +943,9 @@ class RAGAuditEngine(AuditEngine):
                     return MAFResult(status=MAF_VALID, evidence=f"Valid MAF. {data.get('reasoning')}\nExtracted: {data.get('extracted_snippet')}", source_file=src)
                 else:
                     return MAFResult(status=MAF_INVALID, evidence=f"Invalid MAF. {data.get('reasoning')}", source_file=src)
-            except Exception:
-                time.sleep(20)
+            except Exception as e:
+                if "429" in str(e) or "RateLimit" in type(e).__name__:
+                    time.sleep(20)
         return MAFResult(status=MAF_INVALID, evidence="Failed to evaluate MAF: Persistent LLM failure.", source_file="")
 
     def evaluate_pqc(self, pqc_reqs: List[Dict[str, Any]], vendor_text: str) -> List[PQCResult]:
@@ -987,8 +993,9 @@ class RAGAuditEngine(AuditEngine):
                     results.append(PQCResult(req["label"], req_val, provided, passed, req.get("section", "")))
                     success = True
                     break
-                except Exception:
-                    time.sleep(20)
+                except Exception as e:
+                    if "429" in str(e) or "RateLimit" in type(e).__name__:
+                        time.sleep(20)
             if not success:
                 req_val = f"≥ {req.get('threshold', '')} {req.get('unit', '')}" if req.get('threshold') else "Required"
                 results.append(PQCResult(req["label"], req_val, "[ERROR]", False, req.get("section", "")))
@@ -1057,8 +1064,9 @@ class RAGAuditEngine(AuditEngine):
             try:
                 doc_type = chain.invoke({"filename": filename, "text": text[:2000]}).strip()
                 return doc_type.strip('"\'')
-            except Exception:
-                time.sleep(20)
+            except Exception as e:
+                if "429" in str(e) or "RateLimit" in type(e).__name__:
+                    time.sleep(20)
         return "Unclassified Document"
 
     def detect_deviations(self, vendor_text: str) -> List[str]:
@@ -1137,8 +1145,9 @@ class RAGAuditEngine(AuditEngine):
                     status=data.get("status", "lacking"),
                     mandatory=mandatory
                 )
-            except Exception:
-                time.sleep(20)
+            except Exception as e:
+                if "429" in str(e) or "RateLimit" in type(e).__name__:
+                    time.sleep(20)
                 
         required_val = str(spec.get("required_value", "Required"))
         return SpecResult(spec.get("label", ""), required_val, "[DATA LACKING]", "lacking", mandatory)
