@@ -781,8 +781,8 @@ class RAGAuditEngine(AuditEngine):
             if groq_key:
                 try:
                     from langchain_groq import ChatGroq
-                    self.llm = ChatGroq(model_name="llama-3.1-8b-instant", groq_api_key=groq_key, temperature=0.0, max_retries=0, timeout=30)
-                    self.llm_smart = ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=groq_key, temperature=0.0, max_retries=0, timeout=45)
+                    self.llm = ChatGroq(model_name="llama-3.1-8b-instant", groq_api_key=groq_key, temperature=0.0, max_retries=0, timeout=120)
+                    self.llm_smart = ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=groq_key, temperature=0.0, max_retries=0, timeout=120)
                 except ImportError:
                     from langchain_community.llms import Ollama
                     self.llm = Ollama(model=self.model_name, temperature=0.0)
@@ -830,22 +830,30 @@ class RAGAuditEngine(AuditEngine):
         self.vectorstores[real_id] = vectorstore
         return vectorstore
 
-    def _extract_json(self, text: str) -> dict:
-        """Robustly extracts the first complete JSON object from text, ignoring extra data."""
-        start = text.find('{')
-        if start == -1:
-            raise ValueError("No JSON object found")
+    def _extract_json(self, text: str):
+        """Robustly extracts the first complete JSON object or array from text."""
+        start_obj = text.find('{')
+        start_arr = text.find('[')
+        
+        if start_obj == -1 and start_arr == -1:
+            raise ValueError("No JSON found")
+            
+        start = start_obj if start_arr == -1 else (start_arr if start_obj == -1 else min(start_obj, start_arr))
+        is_array = (text[start] == '[')
+        open_char = '[' if is_array else '{'
+        close_char = ']' if is_array else '}'
+        
         stack = 0
         end = -1
         for i in range(start, len(text)):
-            if text[i] == '{': stack += 1
-            elif text[i] == '}':
+            if text[i] == open_char: stack += 1
+            elif text[i] == close_char:
                 stack -= 1
                 if stack == 0:
                     end = i + 1
                     break
         if end == -1:
-            raise ValueError("Unmatched braces in JSON")
+            raise ValueError("Unmatched braces/brackets in JSON")
         return json.loads(text[start:end])
 
     def parse_master_bid(self, bid_text: str) -> Dict[str, Any]:
@@ -1210,10 +1218,16 @@ class RAGAuditEngine(AuditEngine):
             Executive Summary:"""
         )
         chain = prompt | self.llm | StrOutputParser()
-        try:
-            return chain.invoke({"context": json.dumps(ctx, indent=2)})
-        except Exception:
-            return None
+        import time
+        for attempt in range(4):
+            try:
+                return chain.invoke({"context": json.dumps(ctx, indent=2)})
+            except Exception as e:
+                if "429" in str(e) or "RateLimit" in type(e).__name__:
+                    time.sleep(20)
+                else:
+                    time.sleep(5)
+        return None
 
 def get_engine() -> AuditEngine:
     return RAGAuditEngine()
