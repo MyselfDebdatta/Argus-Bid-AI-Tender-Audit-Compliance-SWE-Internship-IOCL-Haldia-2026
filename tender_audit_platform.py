@@ -1037,12 +1037,12 @@ class RAGAuditEngine(AuditEngine):
         if vs:
             unique_chunks = {}
             for doc_name in mandatory_docs:
-                docs = vs.similarity_search(doc_name, k=2)
+                docs = vs.similarity_search(doc_name, k=5)
                 for d in docs:
                     unique_chunks[d.page_content] = True
             context = "\n\n".join(unique_chunks.keys())
         else:
-            context = vendor_text[:15000]
+            context = vendor_text[:20000]
             
         prompt = PromptTemplate(
             input_variables=["mandatory_docs", "inventory_str", "context"],
@@ -1115,10 +1115,10 @@ class RAGAuditEngine(AuditEngine):
         
         vs = self._create_vectorstore(vendor_text, "temp_vendor_search")
         if vs:
-            docs = vs.similarity_search("Make and Model Brand Equipment", k=4)
+            docs = vs.similarity_search("Make Model Brand Manufacturer Equipment Series", k=10)
             context = "\n\n".join(d.page_content for d in docs)
         else:
-            context = vendor_text[:15000]
+            context = vendor_text[:20000]
             
         prompt = PromptTemplate(
             input_variables=["context"],
@@ -3894,7 +3894,7 @@ def render_leaderboard(results: List[VendorResult]) -> None:
             else:
                 dyn_doc_cells += '<td><span style="color: #10b981; font-weight:600;">Given</span></td>'
                 
-        tech_rec = "Technically NOT Accepted" if r.disqualified or any("Technical" in v.title for v in r.violations) else "Technically Accepted"
+        tech_rec = "Technically NOT Accepted" if r.score < 50 else "Technically Accepted"
         com_pqc = "Not Meeting Criteria" if any(not p.passed for p in r.pqc) else "Meeting Criteria"
         com_rec = "Techno-commercially NOT Accepted" if r.disqualified else "Techno-commercially Accepted"
 
