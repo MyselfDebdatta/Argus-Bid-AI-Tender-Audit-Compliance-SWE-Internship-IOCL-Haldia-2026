@@ -946,7 +946,7 @@ class RAGAuditEngine(AuditEngine):
             input_variables=["context", "tender_id"],
             template="""You are a strict procurement auditor. Review these document excerpts to verify if there is a valid Manufacturer's Authorization Form (MAF).
             A valid MAF must be on the original equipment manufacturer's (OEM) letterhead. IMPORTANT: Affiliates, subsidiaries, and regional branches of the OEM (e.g., 'Samsung India' instead of 'Samsung Corp') are perfectly VALID OEM letterheads. Accept them.
-            It must explicitly authorize the vendor to participate in tender ID: {tender_id}.
+            It must authorize the vendor for this tender. NOTE: It is perfectly VALID if the MAF references the tender ID: {tender_id}, OR a GeM Bid Number (e.g., GEM/202X/B/...), OR simply uses a generic phrase like "the above-mentioned tender".
             
             Excerpts:
             {context}
@@ -3900,11 +3900,14 @@ def render_leaderboard(results: List[VendorResult]) -> None:
     [data-testid="stHorizontalBlock"] {
         flex-wrap: nowrap !important;
         overflow-x: auto !important;
-        min-width: 1700px !important;
+        min-width: 2200px !important;
         border-bottom: 1px solid rgba(255,255,255,0.05);
-        align-items: center;
+        align-items: flex-start;
         padding-top: 10px;
         padding-bottom: 10px;
+    }
+    [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+        min-width: 140px !important;
     }
     /* Specific styling for the tiny Look buttons inside these columns */
     [data-testid="stHorizontalBlock"] .stButton>button {
@@ -3954,9 +3957,8 @@ def render_leaderboard(results: List[VendorResult]) -> None:
             # MAF
             maf_status = maf_pill(r.maf.status if r.maf else MAF_MISSING, maf_req)
             if r.maf and r.maf.status != MAF_MISSING:
-                c3_1, c3_2 = cols[2].columns([1.5, 1])
-                c3_1.markdown(maf_status, unsafe_allow_html=True)
-                if c3_2.button("👁 Look", key=f"look_maf_{r.name}"):
+                cols[2].markdown(maf_status, unsafe_allow_html=True)
+                if cols[2].button("👁 Look", key=f"look_maf_{r.name}"):
                     show_double_confirm_dialog(r.name, r, "MAF Verification", r.maf.source_file, r.maf.evidence)
             else:
                 cols[2].markdown(maf_status, unsafe_allow_html=True)
@@ -3970,9 +3972,8 @@ def render_leaderboard(results: List[VendorResult]) -> None:
                 if doc in r.missing_documents:
                     cols[idx].markdown('<span style="color: #ef4444; font-weight:600;">Not Given</span>', unsafe_allow_html=True)
                 else:
-                    c_doc1, c_doc2 = cols[idx].columns([1.2, 1])
-                    c_doc1.markdown('<span style="color: #10b981; font-weight:600;">Given</span>', unsafe_allow_html=True)
-                    if c_doc2.button("👁 Look", key=f"look_doc_{doc}_{r.name}"):
+                    cols[idx].markdown('<span style="color: #10b981; font-weight:600;">Given</span>', unsafe_allow_html=True)
+                    if cols[idx].button("👁 Look", key=f"look_doc_{doc}_{r.name}"):
                         show_double_confirm_dialog(r.name, r, f"Verification for {doc}", "", doc)
                 idx += 1
                 
@@ -4468,30 +4469,7 @@ def main() -> None:
     eyebrow("04", "Vendor Audit Deep-Dive")
     render_drawers(ss.results)
     
-    eyebrow("05", "Double-Confirm Source")
-    st.markdown("<div style='margin-bottom: 20px; font-size: 14px; color: var(--muted);'>Verify the engine's extraction or manually review unreadable documents.</div>", unsafe_allow_html=True)
-    ordered = sorted(ss.results, key=lambda r: (r.disqualified, -(r.score)))
-    
-    for r in ordered:
-        has_maf = bool(r.maf and r.maf.status != MAF_MISSING)
-        unreadable_docs = [item for item in r.inventory if item.readability in (READ_LOW, READ_CORRUPT)]
-        
-        if has_maf or unreadable_docs:
-            with st.container(border=True):
-                st.markdown(f"<div style='font-family: \"JetBrains Mono\", monospace; font-size: 15px; font-weight: 700; color: #60A5FA; margin-bottom: 8px;'>{html.escape(r.name)}</div>", unsafe_allow_html=True)
-                cols = st.columns(3)
-                col_idx = 0
-                
-                if has_maf:
-                    pass # Inspect MAF button is now inside the Compliance Leaderboard table
-                    
-                for item in unreadable_docs:
-                    with cols[col_idx % 3]:
-                        if st.button(f"Inspect {item.filename}", key=f"dc_unred_{r.name}_{item.filename}", use_container_width=True, type="primary"):
-                            show_double_confirm_dialog(r.name, r, "Unreadable Document Check", item.filename, "")
-                    col_idx += 1
-            
-            st.markdown("<div style='margin-bottom: 8px;'></div>", unsafe_allow_html=True)
+    pass # Double-Confirm Source removed from here
 
 
 if __name__ == "__main__":
