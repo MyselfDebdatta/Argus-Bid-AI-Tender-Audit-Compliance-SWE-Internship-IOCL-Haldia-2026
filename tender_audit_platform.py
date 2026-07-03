@@ -569,40 +569,50 @@ class AuditEngine:
                        errors: Dict[str, Optional[str]], bid: Dict[str, Any]) -> VendorResult:
         result = VendorResult(name=name)
 
-        # 1. Inventory + classification + readability
-        for fname, text in files.items():
+        import concurrent.futures
+        
+        # 1. Inventory + classification + readability (Parallel)
+        def classify_file(fname, text):
             doc_type = self.classify_document(fname, text)
             readability = self.assess_readability(text, errors.get(fname))
-            result.inventory.append(InventoryItem(fname, doc_type, readability))
+            return InventoryItem(fname, doc_type, readability)
+            
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(classify_file, f, t) for f, t in files.items()]
+            result.inventory = [f.result() for f in futures] # keep order
 
         present_types = {i.doc_type for i in result.inventory}
         combined_text = "\n".join(files.values())
+        
+        # Prime the vectorstores sequentially to prevent Chroma race conditions
+        if hasattr(self, "_create_vectorstore"):
+            self._create_vectorstore(combined_text, "temp_vendor_search")
+            self._create_vectorstore(combined_text, "vendor_pqc")
 
-        # 1.5 Make and model
-        result.make_and_model = self.extract_make_and_model(combined_text)
-
-        # 2. MAF gate
-        result.maf = self.validate_maf(result.inventory, files, bid.get("tender_id", ""))
-
-        # 3. PQC
-        result.pqc = self.evaluate_pqc(bid.get("pqc", []), combined_text)
-
-        # 4. Technical specs (Batched)
-        def batch_list(lst, n):
-            for i in range(0, len(lst), n):
-                yield lst[i:i + n]
-                
-        for batch in batch_list(bid.get("mandatory_specs", []), 10):
-            result.mandatory_specs.extend(self.extract_specs_batch(batch, combined_text, True))
+        # 2-6. Run all deep extractions in parallel!
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            future_make = executor.submit(self.extract_make_and_model, combined_text)
+            future_maf = executor.submit(self.validate_maf, result.inventory, files, bid.get("tender_id", ""))
+            future_pqc = executor.submit(self.evaluate_pqc, bid.get("pqc", []), combined_text)
+            future_missing = executor.submit(self.check_missing_docs, bid.get("mandatory_docs", []), combined_text, result.inventory)
+            future_dev = executor.submit(self.detect_deviations, combined_text)
             
-        for batch in batch_list(bid.get("preferred_specs", []), 10):
-            result.preferred_specs.extend(self.extract_specs_batch(batch, combined_text, False))
-
-        # 5. Deviations
-        result.deviations = self.detect_deviations(combined_text)
-
-        # 6. Missing mandatory documents
-        result.missing_documents = self.check_missing_docs(bid.get("mandatory_docs", []), combined_text, result.inventory)
+            def batch_list(lst, n):
+                for i in range(0, len(lst), n): yield lst[i:i + n]
+                
+            future_mand_specs = [executor.submit(self.extract_specs_batch, b, combined_text, True) for b in batch_list(bid.get("mandatory_specs", []), 10)]
+            future_pref_specs = [executor.submit(self.extract_specs_batch, b, combined_text, False) for b in batch_list(bid.get("preferred_specs", []), 10)]
+            
+            result.make_and_model = future_make.result()
+            result.maf = future_maf.result()
+            result.pqc = future_pqc.result()
+            result.missing_documents = future_missing.result()
+            result.deviations = future_dev.result()
+            
+            for f in future_mand_specs:
+                result.mandatory_specs.extend(f.result())
+            for f in future_pref_specs:
+                result.preferred_specs.extend(f.result())
 
         # 7. Disqualification gate (binary, eligibility-level)
         self._apply_disqualification_gate(result, bid)
@@ -935,7 +945,7 @@ class RAGAuditEngine(AuditEngine):
         prompt = PromptTemplate(
             input_variables=["context", "tender_id"],
             template="""You are a strict procurement auditor. Review these document excerpts to verify if there is a valid Manufacturer's Authorization Form (MAF).
-            A valid MAF must be on the original equipment manufacturer's (OEM) letterhead.
+            A valid MAF must be on the original equipment manufacturer's (OEM) letterhead. IMPORTANT: Affiliates, subsidiaries, and regional branches of the OEM (e.g., 'Samsung India' instead of 'Samsung Corp') are perfectly VALID OEM letterheads. Accept them.
             It must explicitly authorize the vendor to participate in tender ID: {tender_id}.
             
             Excerpts:
@@ -3883,64 +3893,107 @@ def render_leaderboard(results: List[VendorResult]) -> None:
     mandatory_docs_raw = st.session_state.bid.get("mandatory_docs", []) if st.session_state.bid else []
     dynamic_docs = [doc for doc in mandatory_docs_raw if "MAF" not in doc.upper() and "MANUFACTURER" not in doc.upper()]
 
-    rows = []
-    for r in ordered:
-        rank_html = get_rank_html(r.rank)
-        dq_cls = "dq" if r.disqualified else ""
-        bar_cls = "bar dq" if r.disqualified else "bar"
-        width = r.score
-        nfiles = sum(len(v) for v in [st.session_state.vendor_files.get(r.name, {})])
-        
-        dyn_doc_cells = ""
-        for doc in dynamic_docs:
-            if doc in r.missing_documents:
-                dyn_doc_cells += '<td><span style="color: #ef4444; font-weight:600;">Not Given</span></td>'
-            else:
-                dyn_doc_cells += '<td><span style="color: #10b981; font-weight:600;">Given</span></td>'
-                
-        tech_rec = "Technically NOT Accepted" if r.score < 50 else "Technically Accepted"
-        com_pqc = "Not Meeting Criteria" if any(not p.passed for p in r.pqc) else "Meeting Criteria"
-        com_rec = "Techno-commercially NOT Accepted" if r.disqualified else "Techno-commercially Accepted"
-
-        rows.append(f"""
-        <tr class="{dq_cls}">
-          <td>{rank_html}</td>
-          <td><div class="vname">{html.escape(r.name)}</div>
-              <div class="vmeta">{nfiles} document(s) submitted</div></td>
-          <td>{maf_pill(r.maf.status if r.maf else MAF_MISSING, maf_req)}</td>
-          <td><div style="font-family:'JetBrains Mono', monospace; font-size:12px; color:#94a3b8; background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:4px; max-width:200px; white-space:normal; overflow:hidden;">{html.escape(r.make_and_model)}</div></td>
-          {dyn_doc_cells}
-          <td>{get_eval_pill(tech_rec, "NOT" not in tech_rec)}</td>
-          <td>{get_eval_pill(com_pqc, "Not " not in com_pqc)}</td>
-          <td>{get_eval_pill(com_rec, "NOT" not in com_rec)}</td>
-          <td><div class="scorewrap"><div class="{bar_cls}"><span style="width:{width}%"></span></div>
-              <span class="scoreval">{r.score:g}%</span></div></td>
-          <td style="color:var(--muted);font-size:12.5px;max-width:280px;white-space:normal;overflow:hidden;line-height:1.5;">{html.escape(r.summary)}</td>
-        </tr>""")
-        
-    dyn_headers = "".join(f"<th>{html.escape(doc)}</th>" for doc in dynamic_docs)
-
-    st.markdown(f"""
-    <div style="overflow-x: auto; max-width: 100vw; width: 100%; padding-bottom:15px;">
-    <table class="lb" style="white-space: nowrap;">
-      <thead>
-        <tr>
-          <th>Sl. No.</th>
-          <th>Vendor Title</th>
-          <th>MAF</th>
-          <th>Make and model</th>
-          {dyn_headers}
-          <th>Technical Recommendation</th>
-          <th>Commercial PQC</th>
-          <th>Commercial Recommendation</th>
-          <th>Compliance Score</th>
-          <th>Key Takeaway</th>
-        </tr>
-      </thead>
-      <tbody>{''.join(rows)}</tbody>
-    </table>
-    </div>
+    st.markdown('<span id="lb-hook"></span>', unsafe_allow_html=True)
+    st.markdown("""
+    <style>
+    /* Target the columns container directly following the hook */
+    [data-testid="stHorizontalBlock"] {
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        min-width: 1700px !important;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+        align-items: center;
+        padding-top: 10px;
+        padding-bottom: 10px;
+    }
+    /* Specific styling for the tiny Look buttons inside these columns */
+    [data-testid="stHorizontalBlock"] .stButton>button {
+        padding: 0px 8px !important;
+        min-height: 28px !important;
+        height: 28px !important;
+        font-size: 11.5px !important;
+        background: rgba(16, 185, 129, 0.1) !important;
+        border: 1px solid rgba(16, 185, 129, 0.3) !important;
+        color: #10b981 !important;
+        border-radius: 4px !important;
+    }
+    [data-testid="stHorizontalBlock"] .stButton>button:hover {
+        background: rgba(16, 185, 129, 0.2) !important;
+        border-color: #10b981 !important;
+        color: white !important;
+    }
+    .th-hdr {
+        font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: #8B9BB4; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
+    }
+    </style>
     """, unsafe_allow_html=True)
+
+    cols_spec = [0.6, 1.8, 1.6, 1.8] + [1.4]*len(dynamic_docs) + [1.8, 1.8, 1.8, 1.5, 2.0]
+    
+    with st.container():
+        # Headers
+        header_cols = st.columns(cols_spec)
+        headers = ["Sl. No.", "Vendor Title", "MAF", "Make and model"] + [html.escape(d) for d in dynamic_docs] + ["Technical Recommendation", "Commercial PQC", "Commercial Recommendation", "Compliance Score", "Key Takeaway"]
+        for col, text in zip(header_cols, headers):
+            col.markdown(f"<div class='th-hdr'>{text}</div>", unsafe_allow_html=True)
+            
+        # Rows
+        for r in ordered:
+            cols = st.columns(cols_spec)
+            dq_cls = "dq" if r.disqualified else ""
+            bar_cls = "bar dq" if r.disqualified else "bar"
+            width = r.score
+            nfiles = sum(len(v) for v in [st.session_state.vendor_files.get(r.name, {})])
+            
+            # Rank
+            cols[0].markdown(get_rank_html(r.rank), unsafe_allow_html=True)
+            
+            # Vendor
+            cols[1].markdown(f"<div class='vname' style='opacity:{0.5 if r.disqualified else 1}'>{html.escape(r.name)}</div><div class='vmeta'>{nfiles} doc(s)</div>", unsafe_allow_html=True)
+            
+            # MAF
+            maf_status = maf_pill(r.maf.status if r.maf else MAF_MISSING, maf_req)
+            if r.maf and r.maf.status != MAF_MISSING:
+                c3_1, c3_2 = cols[2].columns([1.5, 1])
+                c3_1.markdown(maf_status, unsafe_allow_html=True)
+                if c3_2.button("👁 Look", key=f"look_maf_{r.name}"):
+                    show_double_confirm_dialog(r.name, r, "MAF Verification", r.maf.source_file, r.maf.evidence)
+            else:
+                cols[2].markdown(maf_status, unsafe_allow_html=True)
+                
+            # Make & Model
+            cols[3].markdown(f"<div style=\"font-family:'JetBrains Mono', monospace; font-size:12px; color:#94a3b8; background:rgba(255,255,255,0.05); padding:4px 8px; border-radius:4px; max-width:200px; white-space:normal;\">{html.escape(r.make_and_model)}</div>", unsafe_allow_html=True)
+            
+            # Dynamic Docs
+            idx = 4
+            for doc in dynamic_docs:
+                if doc in r.missing_documents:
+                    cols[idx].markdown('<span style="color: #ef4444; font-weight:600;">Not Given</span>', unsafe_allow_html=True)
+                else:
+                    c_doc1, c_doc2 = cols[idx].columns([1.2, 1])
+                    c_doc1.markdown('<span style="color: #10b981; font-weight:600;">Given</span>', unsafe_allow_html=True)
+                    if c_doc2.button("👁 Look", key=f"look_doc_{doc}_{r.name}"):
+                        show_double_confirm_dialog(r.name, r, f"Verification for {doc}", "", doc)
+                idx += 1
+                
+            # Recs
+            tech_rec = "Technically NOT Accepted" if r.score < 50 else "Technically Accepted"
+            com_pqc = "Not Meeting Criteria" if any(not p.passed for p in r.pqc) else "Meeting Criteria"
+            com_rec = "Techno-commercially NOT Accepted" if r.disqualified else "Techno-commercially Accepted"
+            
+            cols[idx].markdown(get_eval_pill(tech_rec, "NOT" not in tech_rec), unsafe_allow_html=True)
+            idx += 1
+            cols[idx].markdown(get_eval_pill(com_pqc, "Not " not in com_pqc), unsafe_allow_html=True)
+            idx += 1
+            cols[idx].markdown(get_eval_pill(com_rec, "NOT" not in com_rec), unsafe_allow_html=True)
+            idx += 1
+            
+            # Score
+            cols[idx].markdown(f"<div class='scorewrap'><div class='{bar_cls}'><span style='width:{width}%'></span></div><span class='scoreval'>{r.score:g}%</span></div>", unsafe_allow_html=True)
+            idx += 1
+            
+            # Summary
+            cols[idx].markdown(f"<div style='color:var(--muted);font-size:12.5px;max-width:280px;white-space:normal;line-height:1.5;'>{html.escape(r.summary)}</div>", unsafe_allow_html=True)
 
 
 def render_xai(xai: List[str], narrative: Optional[str]) -> None:
@@ -4430,11 +4483,7 @@ def main() -> None:
                 col_idx = 0
                 
                 if has_maf:
-                    with cols[col_idx % 3]:
-                        if st.button(f"Inspect MAF", key=f"dc_maf_{r.name}", use_container_width=True, type="primary"):
-                            src_file = r.maf.source_file if r.maf.source_file else "Unknown Source"
-                            show_double_confirm_dialog(r.name, r, "MAF Validation", src_file, r.maf.evidence)
-                    col_idx += 1
+                    pass # Inspect MAF button is now inside the Compliance Leaderboard table
                     
                 for item in unreadable_docs:
                     with cols[col_idx % 3]:
