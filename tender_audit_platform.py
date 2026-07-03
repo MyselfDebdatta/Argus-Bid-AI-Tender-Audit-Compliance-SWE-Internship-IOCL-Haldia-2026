@@ -4075,50 +4075,115 @@ def render_document_verification(results: List[VendorResult]) -> None:
 
     st.markdown("""
     <style>
+    /* Expander UI Override */
+    div[data-testid="stExpander"] {
+        border: 1px solid rgba(148, 163, 184, 0.15) !important;
+        border-radius: 8px !important;
+        background: rgba(15, 23, 42, 0.4) !important;
+        margin-bottom: 12px !important;
+    }
+    div[data-testid="stExpander"] summary {
+        background: rgba(255, 255, 255, 0.02) !important;
+        border-radius: 8px !important;
+    }
+    div[data-testid="stExpander"] summary p {
+        font-family: 'JetBrains Mono', monospace !important;
+        font-size: 14px !important;
+        font-weight: 700 !important;
+        color: #60A5FA !important;
+        letter-spacing: 0.5px !important;
+    }
+    /* Button Styling */
     .verify-btn button {
-        padding: 4px 12px !important;
-        min-height: 32px !important;
-        font-size: 13px !important;
-        background: rgba(56, 189, 248, 0.1) !important;
+        padding: 4px 10px !important;
+        min-height: 28px !important;
+        font-family: 'JetBrains Mono', monospace !important;
+        font-size: 12px !important;
+        font-weight: 700 !important;
+        background: linear-gradient(90deg, rgba(56, 189, 248, 0.15), rgba(56, 189, 248, 0.05)) !important;
         border: 1px solid rgba(56, 189, 248, 0.3) !important;
         color: #38bdf8 !important;
         border-radius: 6px !important;
+        box-shadow: 0 0 10px rgba(56, 189, 248, 0.1) !important;
+        text-transform: uppercase;
+        margin-top: 4px;
+        transition: all 0.2s ease !important;
     }
     .verify-btn button:hover {
         background: rgba(56, 189, 248, 0.2) !important;
         color: white !important;
+        border-color: #38bdf8 !important;
+        box-shadow: 0 0 15px rgba(56, 189, 248, 0.3) !important;
     }
+    /* Text Styling */
     .doc-row {
-        padding: 10px 0;
-        border-bottom: 1px solid rgba(255,255,255,0.05);
+        padding: 8px 0;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 13px;
+        display: flex;
+        align-items: center;
+        min-height: 40px;
+    }
+    .doc-name {
+        font-weight: 600;
+        color: #e2e8f0;
+        letter-spacing: 0.5px;
+    }
+    .status-good {
+        color: #10b981;
+        font-weight: 700;
+        background: rgba(16, 185, 129, 0.1);
+        padding: 4px 8px;
+        border-radius: 4px;
+        border: 1px solid rgba(16, 185, 129, 0.2);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    .status-bad {
+        color: #ef4444;
+        font-weight: 700;
+        background: rgba(239, 68, 68, 0.1);
+        padding: 4px 8px;
+        border-radius: 4px;
+        border: 1px solid rgba(239, 68, 68, 0.2);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
     }
     </style>
     """, unsafe_allow_html=True)
 
     for r in ordered:
         with st.expander(f"🔎 Document Verification: {r.name}"):
-            cols = st.columns([0.7, 0.3])
-            cols[0].markdown("<div class='doc-row'><b>Manufacturer's Authorization Form (MAF)</b></div>", unsafe_allow_html=True)
+            # MAF Row
+            c1, c2, c3 = st.columns([0.6, 0.2, 0.2])
+            c1.markdown("<div class='doc-row'><span class='doc-name'>Manufacturer's Authorization Form (MAF)</span></div>", unsafe_allow_html=True)
             if r.maf and r.maf.status != MAF_MISSING:
-                with cols[1]:
+                c2.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-good'>Found</span></div>", unsafe_allow_html=True)
+                with c3:
                     st.markdown("<div class='verify-btn'>", unsafe_allow_html=True)
-                    if st.button("👁 Look (MAF)", key=f"vd_maf_{r.name}", use_container_width=True):
+                    if st.button("👁 Look", key=f"vd_maf_{r.name}", use_container_width=True):
                         show_double_confirm_dialog(r.name, r, "MAF Verification", r.maf.source_file, r.maf.evidence)
                     st.markdown("</div>", unsafe_allow_html=True)
             else:
-                cols[1].markdown("<div class='doc-row' style='color:#ef4444;'>Not Given</div>", unsafe_allow_html=True)
+                c2.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-bad'>Not Given</span></div>", unsafe_allow_html=True)
                 
+            st.divider()
+                
+            # Dynamic Docs Rows
             for doc in dynamic_docs:
-                cols = st.columns([0.7, 0.3])
-                cols[0].markdown(f"<div class='doc-row'>{html.escape(doc)}</div>", unsafe_allow_html=True)
+                c1, c2, c3 = st.columns([0.6, 0.2, 0.2])
+                c1.markdown(f"<div class='doc-row'><span class='doc-name'>{html.escape(doc)}</span></div>", unsafe_allow_html=True)
                 if doc not in r.missing_documents:
-                    with cols[1]:
+                    c2.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-good'>Found</span></div>", unsafe_allow_html=True)
+                    with c3:
                         st.markdown("<div class='verify-btn'>", unsafe_allow_html=True)
                         if st.button(f"👁 Look", key=f"vd_doc_{doc}_{r.name}", use_container_width=True):
                             show_double_confirm_dialog(r.name, r, f"Verification for {doc}", "", doc)
                         st.markdown("</div>", unsafe_allow_html=True)
                 else:
-                    cols[1].markdown("<div class='doc-row' style='color:#ef4444;'>Not Given</div>", unsafe_allow_html=True)
+                    c2.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-bad'>Not Given</span></div>", unsafe_allow_html=True)
 
 def render_drawers(results: List[VendorResult]) -> None:
     ordered = sorted(results, key=lambda r: (r.disqualified, -(r.score)))
