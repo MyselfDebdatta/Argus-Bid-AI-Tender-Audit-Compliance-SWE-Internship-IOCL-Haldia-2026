@@ -993,8 +993,8 @@ class RAGAuditEngine(AuditEngine):
                 r"(?i)(?:rs\.?|inr)\s*([\d,]+(?:\.\d+)?)\s*(?:crore|lakhs?|lakh|cr\.?)",
             ],
             "order": [
-                # Extract order value in lakhs from order line
-                r"(?i)(?:order|supply|contract)\s*[:\-]?\s*.{0,60}?(?:inr|rs\.?)\s*([\d,]+(?:\.\d+)?)\s*(?:lakhs?|lakh|lac)",
+                # Extremely strict order value pattern (let LLM handle the rest)
+                r"(?i)(?:order\s*value|value\s*of\s*orders?)\s*[:\-]?\s*(?:inr|rs\.?)\s*([\d,]+(?:\.\d+)?)\s*(?:lakhs?|lakh|lac)",
                 r"(?i)(?:successfully\s*)?(?:supplied|completed|executed|delivered)\D{0,40}?(\d+)\s*(?:similar\s*)?orders?",
                 r"(?i)(\d+)\s*(?:similar\s*)?orders?\s*(?:of|for|worth|valued)",
             ],
@@ -1116,7 +1116,8 @@ class RAGAuditEngine(AuditEngine):
             if vs:
                 unique_chunks = {}
                 for req in unresolved_reqs:
-                    query = f"{req.get('label', '')} {req.get('threshold', '')} {req.get('unit', '')}"
+                    clean_label = re.sub(r"(?i)pqc|\(alternative.*?\)|§\w+", "", req.get('label', '')).strip()
+                    query = f"{clean_label} {req.get('threshold', '')} {req.get('unit', '')}"
                     docs = vs.similarity_search(query, k=3)
                     for d in docs: unique_chunks[d.page_content] = True
                 context = "\n\n".join(unique_chunks.keys())[:10000]
@@ -2212,7 +2213,7 @@ def save_state_to_disk() -> None:
         err_str = traceback.format_exc()
         with open("error_log.txt", "w") as f:
             f.write(err_str)
-        st.error(f"Cache Save Error: {err_str}")
+        # st.error(f"Cache Save Error: {err_str}")
 
 def load_state_from_disk() -> bool:
     ss = st.session_state
