@@ -1182,57 +1182,40 @@ class RAGAuditEngine(AuditEngine):
         return results
 
     def check_missing_docs(self, mandatory_docs: List[str], vendor_text: str, inventory: List[InventoryItem]) -> List[str]:
-        if not self.llm or not mandatory_docs: return []
-        from langchain_core.prompts import PromptTemplate
-        from langchain_core.output_parsers import StrOutputParser
-        import json
+        missing = []
+        vendor_text_lower = vendor_text.lower()
         
-        inventory_str = "\n".join([f"- {i.filename}: {i.doc_type}" for i in inventory])
-        
-        vs = self._create_vectorstore(vendor_text, "temp_vendor_search")
-        if vs:
-            unique_chunks = {}
-            for doc_name in mandatory_docs:
-                docs = vs.similarity_search(doc_name, k=3)
-                for d in docs:
-                    unique_chunks[d.page_content] = True
-            context = "\n\n".join(unique_chunks.keys())[:8000]
-        else:
-            context = vendor_text[:5000]
+        for doc_name in mandatory_docs:
+            doc_lower = doc_name.lower()
+            clean_doc = re.sub(r"[^a-z0-9 ]", " ", doc_lower)
+            doc_words = [w for w in clean_doc.split() if len(w) >= 4]
+            if not doc_words: doc_words = clean_doc.split()
             
-        prompt = PromptTemplate(
-            input_variables=["mandatory_docs", "inventory_str", "context"],
-            template="""You are a procurement auditor. Check if all mandatory documents are present in the vendor's submission.
+            found = False
+            # 1. Check if the document type or filename in inventory matches
+            for item in inventory:
+                inv_str = f"{item.doc_type} {item.filename}".lower()
+                # Require at least 50% of the significant words to be present in the inventory item
+                matches = sum(1 for w in doc_words if w in inv_str)
+                if matches >= max(1, len(doc_words) // 2):
+                    found = True
+                    break
             
-            Mandatory Documents Required:
-            {mandatory_docs}
+            # 2. Check the raw text of all files for presence of key words in close proximity
+            if not found and doc_words:
+                pat = r"(?i)" + r"[\s\S]{0,50}".join(doc_words)
+                try:
+                    if re.search(pat, vendor_text):
+                        found = True
+                except re.error:
+                    # Fallback to simple ANY match if regex is too complex
+                    if any(w in vendor_text_lower for w in doc_words):
+                        found = True
             
-            Vendor's Classified Inventory (Filenames and initial types):
-            {inventory_str}
-            
-            Extracted Text Context from vendor's files (use this to verify if merged documents exist):
-            {context}
-            
-            Evaluate if each required document is provided. A document is provided if it is either explicitly listed in the inventory OR its core contents clearly exist within the extracted text context (meaning it was merged into another file).
-            List the EXACT NAMES of any Mandatory Documents that are completely missing.
-            
-            Output JSON exactly like this:
-            {{
-                "missing_documents": ["Exact name from Mandatory Documents list", ...]
-            }}
-            """
-        )
-        chain = prompt | self.llm | StrOutputParser()
-        import time
-        for attempt in range(4):
-            try:
-                response = chain.invoke({"mandatory_docs": json.dumps(mandatory_docs), "inventory_str": inventory_str, "context": context})
-                data = self._extract_json(response, expected_type=dict)
-                return data.get("missing_documents", [])
-            except Exception as e:
-                if "429" in str(e) or "RateLimit" in type(e).__name__:
-                    time.sleep(min(2 ** attempt, 8))
-        return []
+            if not found:
+                missing.append(doc_name)
+                
+        return missing
 
     def classify_document(self, filename: str, text: str) -> str:
         if not self.llm: return super().classify_document(filename, text)
