@@ -1006,16 +1006,25 @@ class RAGAuditEngine(AuditEngine):
 
         # Match label to pattern category
         category = None
+        label_lower_str = str(label).lower()
         unit_lower = str(unit).lower()
-        if "order" in unit_lower: category = "order"
-        elif "year" in unit_lower: category = "experience"
-        elif any(x in unit_lower for x in ["lakh", "crore", "cr", "rs", "inr"]): category = "turnover"
         
+        # 1. Label intent takes priority
+        if "order" in label_lower_str: category = "order"
+        elif "turnover" in label_lower_str or "revenue" in label_lower_str: category = "turnover"
+        elif "experience" in label_lower_str: category = "experience"
+        elif "registration" in label_lower_str: category = "registration"
+        
+        # 2. Fallback to unit
         if not category:
-            for cat in pqc_patterns:
-                if cat in label_lower or any(w in label_lower for w in cat.split()):
-                    category = cat
-                    break
+            if "order" in unit_lower: category = "order"
+            elif "year" in unit_lower: category = "experience"
+            elif any(x in unit_lower for x in ["lakh", "crore", "cr", "rs", "inr"]): category = "turnover"
+            else:
+                for cat in pqc_patterns:
+                    if cat in label_lower_str or any(w in label_lower_str for w in cat.split()):
+                        category = cat
+                        break
 
         if category and category in pqc_patterns:
             for pat in pqc_patterns[category]:
@@ -1435,6 +1444,7 @@ class RAGAuditEngine(AuditEngine):
             try:
                 req_num = float(req_nums[0].replace(",", ""))
                 prov_num = float(prov_nums[0].replace(",", ""))
+                
                 # "or Better" / "or Higher" → prov ≥ req
                 if any(x in req_str for x in ["or better", "or higher", "minimum", "min", "≥", ">="]):
                     return "match" if prov_num >= req_num else "fail"
