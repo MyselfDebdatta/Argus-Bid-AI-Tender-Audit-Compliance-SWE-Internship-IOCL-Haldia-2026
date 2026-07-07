@@ -1045,6 +1045,23 @@ class RAGAuditEngine(AuditEngine):
                         except re.error:
                             pass
                             
+        # Ultimate presence fallback
+        req_nums = re.findall(r"\d+(?:\.\d+)?", str(threshold))
+        if req_nums:
+            clean_lbl = re.sub(r"[^a-z0-9 ]", " ", str(label).lower())
+            lbl_words = [w for w in clean_lbl.split() if len(w) >= 4][:2] # Top 2 significant words
+            if not lbl_words: lbl_words = clean_lbl.split()[:2]
+            
+            for filename, pages in vendor_pages.items():
+                for i, page_text in enumerate(pages):
+                    pt_lower = page_text.lower()
+                    if all(num in pt_lower for num in req_nums):
+                        if all(w in pt_lower for w in lbl_words):
+                            start = max(0, pt_lower.find(req_nums[0]) - 150)
+                            end = min(len(page_text), pt_lower.find(req_nums[0]) + 150)
+                            snippet = page_text[start:end].replace('\n', ' ')
+                            return str(threshold), f"...{snippet}...", f"{filename} (Page {i+1})"
+
         return None, "", ""
 
     @staticmethod
@@ -2618,11 +2635,14 @@ def show_double_confirm_dialog(vendor_name: str, r: VendorResult, title: str, fi
             
     if found_page >= 0 and raw_bytes:
         import base64
+        import streamlit.components.v1 as components
         st.markdown(f"<div style='margin-top: 16px; margin-bottom: 8px; color: #38BDF8; font-weight: 600;'>Rendering Original PDF (Scrolled to Page {found_page + 1})</div>", unsafe_allow_html=True)
         try:
             b64_pdf = base64.b64encode(raw_bytes).decode('utf-8')
-            pdf_display = f'<iframe src="data:application/pdf;base64,{b64_pdf}#page={found_page + 1}" width="100%" height="700px" style="border: none; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.3);"></iframe>'
-            st.markdown(pdf_display, unsafe_allow_html=True)
+            pdf_display = f'''
+            <iframe src="data:application/pdf;base64,{b64_pdf}#page={found_page + 1}" width="100%" height="700" type="application/pdf" style="border: none; border-radius: 8px; background: white;"></iframe>
+            '''
+            components.html(pdf_display, height=710)
         except Exception as e:
             st.error(f"Failed to embed PDF: {e}")
     else:
