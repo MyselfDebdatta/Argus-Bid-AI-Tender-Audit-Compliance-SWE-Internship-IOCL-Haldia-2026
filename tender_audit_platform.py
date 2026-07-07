@@ -1203,14 +1203,9 @@ class RAGAuditEngine(AuditEngine):
             
             # 2. Check the raw text of all files for presence of key words in close proximity
             if not found and doc_words:
-                pat = r"(?i)" + r"[\s\S]{0,50}".join(doc_words)
-                try:
-                    if re.search(pat, vendor_text):
-                        found = True
-                except re.error:
-                    # Fallback to simple ANY match if regex is too complex
-                    if any(w in vendor_text_lower for w in doc_words):
-                        found = True
+                matches = sum(1 for w in doc_words if w in vendor_text_lower)
+                if matches >= max(1, len(doc_words) // 2):
+                    found = True
             
             if not found:
                 missing.append(doc_name)
@@ -2630,13 +2625,53 @@ def show_double_confirm_dialog(vendor_name: str, r: VendorResult, title: str, fi
             pdf_display = f'''
             <!DOCTYPE html>
             <html>
-            <head><style>body {{ margin: 0; padding: 0; overflow: hidden; }}</style></head>
+            <head>
+                <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+                <style>
+                    body {{ margin: 0; background: #1a1a2e; overflow-y: auto; text-align: center; padding: 20px; }}
+                    canvas {{ margin-bottom: 20px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); max-width: 100%; }}
+                </style>
+            </head>
             <body>
-            <embed src="data:application/pdf;base64,{b64_pdf}#page={found_page + 1}" width="100%" height="700px" type="application/pdf" />
+                <div id="pdf-viewer"></div>
+                <script>
+                    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+                    var pdfData = atob("{b64_pdf}");
+                    var loadingTask = pdfjsLib.getDocument({{data: pdfData}});
+                    loadingTask.promise.then(function(pdf) {{
+                        var viewer = document.getElementById('pdf-viewer');
+                        function renderPage(pageNum) {{
+                            if (pageNum > pdf.numPages) return;
+                            pdf.getPage(pageNum).then(function(page) {{
+                                var scale = 1.5;
+                                var viewport = page.getViewport({{scale: scale}});
+                                var canvas = document.createElement('canvas');
+                                canvas.id = 'page-' + pageNum;
+                                var context = canvas.getContext('2d');
+                                canvas.height = viewport.height;
+                                canvas.width = viewport.width;
+                                viewer.appendChild(canvas);
+                                
+                                var renderContext = {{ canvasContext: context, viewport: viewport }};
+                                page.render(renderContext).promise.then(function() {{
+                                    if(pageNum === {found_page + 1}) {{
+                                        canvas.scrollIntoView({{behavior: "smooth", block: "start"}});
+                                        canvas.style.border = "4px solid #38BDF8";
+                                    }}
+                                    renderPage(pageNum + 1);
+                                }});
+                            }});
+                        }}
+                        renderPage(1);
+                    }}).catch(function(error) {{
+                        document.getElementById('pdf-viewer').innerHTML = "<h3 style='color:white;'>Error rendering PDF. Please try again.</h3>";
+                    }});
+                </script>
             </body>
             </html>
             '''
-            components.html(pdf_display, height=710)
+            import streamlit.components.v1 as components
+            components.html(pdf_display, height=750, scrolling=True)
         except Exception as e:
             st.error(f"Failed to embed PDF: {e}")
     else:
