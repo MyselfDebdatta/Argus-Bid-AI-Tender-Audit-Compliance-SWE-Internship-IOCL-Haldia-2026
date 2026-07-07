@@ -1406,7 +1406,7 @@ class RAGAuditEngine(AuditEngine):
 
                     # ultimate presence fallback (for tables without colons or weirdly formatted units like '1920 x 1080')
                     # if the label AND the numeric parts of the required value are within an 80 char window, it's a match!
-                    req_nums = re.findall(r"\d+", str(req_val))
+                    req_nums = re.findall(r"\d+", str(required_value))
                     if req_nums:
                         try:
                             # Just search for the label and see if the numbers are nearby
@@ -1418,7 +1418,7 @@ class RAGAuditEngine(AuditEngine):
                                     start = max(0, m.start() - 150)
                                     end = min(len(text), m.end() + 150)
                                     snippet = text[start:end].replace('\n', ' ')
-                                    return str(req_val), f"...{snippet}...", f"{filename} (Page {i+1})"
+                                    return str(required_value), f"...{snippet}...", f"{filename} (Page {i+1})"
                         except re.error: pass
 
         return None, "", ""
