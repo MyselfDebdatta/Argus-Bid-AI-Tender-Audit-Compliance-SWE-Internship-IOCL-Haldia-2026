@@ -452,6 +452,8 @@ class SpecResult:
     status: str          # "match" | "fail" | "lacking"
     mandatory: bool
     section: str = ""
+    evidence: str = ""
+    source_file: str = ""
 
 
 @dataclass
@@ -461,6 +463,8 @@ class PQCResult:
     provided: str
     passed: bool
     section: str = ""
+    evidence: str = ""
+    source_file: str = ""
 
 
 @dataclass
@@ -566,7 +570,7 @@ class AuditEngine:
 
     # ---- full vendor analysis (orchestration) --------------------------
     def analyze_vendor(self, name: str, files: Dict[str, str],
-                       errors: Dict[str, Optional[str]], bid: Dict[str, Any]) -> VendorResult:
+                       errors: Dict[str, Optional[str]], bid: Dict[str, Any], vendor_pages: Dict[str, List[str]] = None) -> VendorResult:
         result = VendorResult(name=name)
 
         import concurrent.futures
@@ -603,13 +607,16 @@ class AuditEngine:
 
         # LLM-backed tasks run sequentially so they share the TPM bucket fairly.
         # Each uses regex-first logic, so most complete with 0–200 tokens total.
-        result.pqc              = self.evaluate_pqc(bid.get("pqc", []), combined_text)
+        if not vendor_pages:
+            vendor_pages = {"document": [combined_text]}
+            
+        result.pqc              = self.evaluate_pqc(bid.get("pqc", []), vendor_pages)
         result.missing_documents = self.check_missing_docs(
             bid.get("mandatory_docs", []), combined_text, result.inventory)
         result.mandatory_specs  = self.extract_specs_batch(
-            bid.get("mandatory_specs", []), combined_text, True)
+            bid.get("mandatory_specs", []), vendor_pages, True)
         result.preferred_specs  = self.extract_specs_batch(
-            bid.get("preferred_specs", []), combined_text, False)
+            bid.get("preferred_specs", []), vendor_pages, False)
 
         # 7. Disqualification gate (binary, eligibility-level)
         self._apply_disqualification_gate(result, bid)
@@ -975,9 +982,8 @@ class RAGAuditEngine(AuditEngine):
         return MAFResult(status=MAF_INVALID, evidence="Failed to evaluate MAF: Persistent LLM failure.", source_file="")
 
     @staticmethod
-    def _regex_extract_pqc(label: str, threshold: Any, unit: str, vendor_text: str) -> Optional[str]:
-        """Extract a PQC value from vendor text using regex. Returns value string or None."""
-        text = vendor_text
+    def _regex_extract_pqc(label: str, threshold: Any, unit: str, vendor_pages: Dict[str, List[str]]) -> Tuple[Optional[str], str, str]:
+        """Extract a PQC value from vendor pages using regex. Returns (provided_value, evidence_snippet, source_file)."""
         label_lower = label.lower()
         label_words = re.sub(r"[^a-z0-9 ]", " ", label_lower).split()
 
@@ -1008,14 +1014,11 @@ class RAGAuditEngine(AuditEngine):
         category = None
         label_lower_str = str(label).lower()
         unit_lower = str(unit).lower()
-        
-        # 1. Label intent takes priority
         if "order" in label_lower_str: category = "order"
         elif "turnover" in label_lower_str or "revenue" in label_lower_str: category = "turnover"
         elif "experience" in label_lower_str: category = "experience"
         elif "registration" in label_lower_str: category = "registration"
-        
-        # 2. Fallback to unit
+            
         if not category:
             if "order" in unit_lower: category = "order"
             elif "year" in unit_lower: category = "experience"
@@ -1024,37 +1027,24 @@ class RAGAuditEngine(AuditEngine):
                 for cat in pqc_patterns:
                     if cat in label_lower_str or any(w in label_lower_str for w in cat.split()):
                         category = cat
-                        break
 
         if category and category in pqc_patterns:
-            for pat in pqc_patterns[category]:
-                m = re.search(pat, text)
-                if m:
-                    val = m.group(1).strip().strip(",.:;") if m.lastindex else m.group(0).strip()[:60]
-                    if val:
-                        # Annotate with unit for readability
-                        if category == "experience":
-                            return f"{val} years"
-                        if category == "turnover":
-                            # detect unit from context
-                            unit_m = re.search(r"(?i)(crore|lakhs?|lakh)", m.group(0))
-                            sfx = unit_m.group(1).capitalize() if unit_m else unit
-                            return f"INR {val} {sfx}"
-                        if category == "order":
-                            return f"{val} orders" if val.isdigit() else val
-                        return val
-
-        # Generic number extraction using label keywords
-        kw_pat = r"\b" + r"\s*".join(re.escape(w) for w in label_words[:3]) + r"\b"
-        try:
-            generic = rf"(?i){kw_pat}[\s\S]{{0,120}}?([\d][\d,./\- ]*(?:years?|orders?|lakhs?|crore|cr\.?|inr|rs\.?)?)"
-            m = re.search(generic, text)
-            if m:
-                return m.group(1).strip().strip(",.:;")[:60]
-        except re.error:
-            pass
-
-        return None
+            patterns = pqc_patterns[category]
+            for filename, pages in vendor_pages.items():
+                for i, page_text in enumerate(pages):
+                    for pat in patterns:
+                        try:
+                            m = re.search(pat, page_text)
+                            if m:
+                                val = m.group(1).strip() if m.groups() else m.group(0).strip()
+                                start = max(0, m.start() - 150)
+                                end = min(len(page_text), m.end() + 150)
+                                snippet = page_text[start:end].replace('\n', ' ')
+                                return val, f"...{snippet}...", f"{filename} (Page {i+1})"
+                        except re.error:
+                            pass
+                            
+        return None, "", ""
 
     @staticmethod
     def _regex_judge_pqc(provided: str, threshold: Any, unit: str) -> bool:
@@ -1064,10 +1054,8 @@ class RAGAuditEngine(AuditEngine):
         prov_lower = provided.lower()
 
         if threshold is None:
-            # Presence-only requirement
             return bool(provided and len(provided) > 2)
 
-        # Numeric threshold comparison
         req_nums = re.findall(r"[\d]+(?:[.,]\d+)?", str(threshold))
         prov_nums = re.findall(r"[\d]+(?:[.,]\d+)?", prov_lower.replace(",", ""))
         if req_nums and prov_nums:
@@ -1080,101 +1068,93 @@ class RAGAuditEngine(AuditEngine):
 
         return False
 
-    def evaluate_pqc(self, pqc_reqs: List[Dict[str, Any]], vendor_text: str) -> List[PQCResult]:
-        """
-        Regex-first PQC evaluation — extracts experience, turnover, order counts and
-        registrations directly from vendor text without any LLM tokens.
-        Only falls back to LLM for criteria the regex engine cannot resolve.
-        """
-        if not pqc_reqs:
-            return []
+    def evaluate_pqc(self, requirements: List[Dict[str, Any]], vendor_pages: Dict[str, List[str]]) -> List[PQCResult]:
+        """Evaluates PQC using regex-first approach, with LLM+Vector fallback."""
+        results = []
+        unresolved_reqs = []
 
-        results: List[Optional[PQCResult]] = [None] * len(pqc_reqs)
-        unresolved: List[int] = []
-
-        # ── PASS 1: regex ────────────────────────────────────────────
-        for i, req in enumerate(pqc_reqs):
-            label = req.get("label", "")
-            threshold = req.get("threshold")
-            unit = req.get("unit", "")
-            section = req.get("section", "")
-            req_val = f"≥ {threshold} {unit}".strip() if threshold is not None else "Required"
-
-            provided = self._regex_extract_pqc(label, threshold, unit, vendor_text)
-            if provided:
-                passed = self._regex_judge_pqc(provided, threshold, unit)
-                results[i] = PQCResult(label, req_val, provided, passed, section)
-            else:
-                unresolved.append(i)
-
-        # ── PASS 2: LLM for unresolved PQC only ─────────────────────
-        if unresolved and self.llm:
-            unresolved_reqs = [pqc_reqs[i] for i in unresolved]
+        for req in requirements:
+            req_str = f"{req.get('threshold', '')} {req.get('unit', '')}".strip()
+            if not req_str: req_str = "Required"
             
-            # Build Context with Vectorstore!
-            vs = self._create_vectorstore(vendor_text, "vendor_pqc")
+            # 1. Regex Extraction
+            provided_val, evidence, source_file = self._regex_extract_pqc(req.get("label", ""), req.get("threshold", ""), req.get("unit", ""), vendor_pages)
+            
+            if provided_val:
+                # 2. Presence-Based Judgment (Bypass _regex_judge_pqc)
+                results.append(PQCResult(
+                    label=req.get("label", ""),
+                    required=req_str,
+                    provided=provided_val,
+                    passed=True, # It was found!
+                    section=req.get("section", ""),
+                    evidence=evidence,
+                    source_file=source_file
+                ))
+            else:
+                unresolved_reqs.append(req)
+
+        # 3. Fallback to LLM for unresolved requirements
+        if unresolved_reqs and getattr(self, "llm", None):
+            # Flatten vendor_pages for multi_vectorstore
+            flattened_pages = {}
+            for fname, pages in vendor_pages.items():
+                for i, page_text in enumerate(pages):
+                    flattened_pages[f"{fname} (Page {i+1})"] = page_text
+            
+            vs = getattr(self, "_create_multi_vectorstore", lambda x, y: None)(flattened_pages, "vendor_pqc_multi")
             if vs:
                 unique_chunks = {}
+                sources = {}
                 for req in unresolved_reqs:
                     clean_label = re.sub(r"(?i)pqc|\(alternative.*?\)|§\w+", "", req.get('label', '')).strip()
                     query = f"{clean_label} {req.get('threshold', '')} {req.get('unit', '')}"
                     docs = vs.similarity_search(query, k=3)
-                    for d in docs: unique_chunks[d.page_content] = True
-                context = "\n\n".join(unique_chunks.keys())[:10000]
+                    for d in docs:
+                        unique_chunks[d.page_content] = True
+                        sources[d.page_content] = d.metadata.get("source", "LLM Search")
+                context = "\n\n".join([f"[Source: {sources.get(k, 'Unknown')}]\n{k}" for k in unique_chunks.keys()])[:10000]
             else:
-                context = vendor_text[:6000]
+                context = str(vendor_pages)[:6000]
 
             specs_json = json.dumps(unresolved_reqs)
             prompt = (
                 "Check the vendor's pre-qualification criteria in the context.\n"
                 f"Criteria: {specs_json}\n\nContext:\n{context}\n\n"
-                "Return ONLY a JSON array in the same order, extracting the exact value they provided. If not found, use \"[NOT FOUND]\":\n"
+                "Return ONLY a JSON array extracting the exact value provided. If not found, use \"[NOT FOUND]\":\n"
                 "[{\"label\":\"...\",\"provided_value\":\"...\"}]"
             )
             for attempt in range(3):
                 try:
                     resp = self.llm.invoke(prompt).content
                     data = self._extract_json(resp, expected_type=list)
-                    if not isinstance(data, list):
-                        raise ValueError("Expected list")
+                    if not isinstance(data, list): raise ValueError("Expected list")
                         
                     extracted_map = {item.get("label", ""): item for item in data if isinstance(item, dict)}
                     
-                    for i, req in zip(unresolved, unresolved_reqs):
+                    for req in unresolved_reqs.copy():
                         label = req.get("label", "")
-                        threshold = req.get("threshold")
-                        unit = req.get("unit", "")
-                        req_val = f"≥ {threshold} {unit}".strip() if threshold is not None else "Required"
-                        
                         ext = extracted_map.get(label, {})
                         provided = ext.get("provided_value", "[NOT FOUND]")
+                        req_str = f"{req.get('threshold', '')} {req.get('unit', '')}".strip()
+                        if not req_str: req_str = "Required"
                         
-                        passed = False
                         if provided != "[NOT FOUND]":
-                            passed = self._regex_judge_pqc(provided, threshold, unit)
-                            
-                        results[i] = PQCResult(
-                            label, req_val,
-                            provided,
-                            passed,
-                            req.get("section", "")
-                        )
+                            results.append(PQCResult(
+                                label=label, required=req_str, provided=provided,
+                                passed=True, section=req.get("section", ""),
+                                evidence="LLM Vector Search confirmed presence.", source_file="LLM Semantic Search"
+                            ))
+                            unresolved_reqs.remove(req)
                     break
                 except Exception as e:
-                    if "429" in str(e) or "RateLimit" in type(e).__name__:
-                        retry_match = re.search(r"try again in ([\d.]+)s", str(e))
-                        wait = float(retry_match.group(1)) + 1 if retry_match else min(2 ** (attempt + 1), 30)
-                        time.sleep(wait)
-                    else:
-                        time.sleep(3)
+                    time.sleep(3)
 
-        # ── Fill remaining None with NOT FOUND ────────────────────────
-        for i, req in enumerate(pqc_reqs):
-            if results[i] is None:
-                threshold = req.get("threshold")
-                unit = req.get("unit", "")
-                req_val = f"≥ {threshold} {unit}".strip() if threshold is not None else "Required"
-                results[i] = PQCResult(req["label"], req_val, "[NOT FOUND]", False, req.get("section", ""))
+        # 4. Fill remaining with MISSING
+        for req in unresolved_reqs:
+            req_str = f"{req.get('threshold', '')} {req.get('unit', '')}".strip()
+            if not req_str: req_str = "Required"
+            results.append(PQCResult(req["label"], req_str, "[NOT FOUND]", False, req.get("section", "")))
 
         return results
 
@@ -1336,13 +1316,10 @@ class RAGAuditEngine(AuditEngine):
     # -----------------------------------------------------------------------
 
     @staticmethod
-    def _regex_extract_spec(label: str, required_value: Any, unit: str, vendor_text: str) -> Optional[str]:
-        """Try to extract a spec value from vendor text using pure regex.
-        Returns the extracted string on success, or None if not found."""
-        text = vendor_text
-        label_lower = label.lower()
+    def _regex_extract_spec(label: str, required_value: Any, unit: str, vendor_pages: Dict[str, List[str]]) -> Tuple[Optional[str], str, str]:
+        """Returns (provided_value, evidence_snippet, source_file)"""
+        label_lower = str(label).lower()
 
-        # ── numeric extraction ──────────────────────────────────────────
         # Build keyword variants from the spec label
         label_words = re.sub(r"[^a-z0-9 ]", " ", label_lower).split()
         keyword_variants = [
@@ -1353,76 +1330,80 @@ class RAGAuditEngine(AuditEngine):
 
         # Number + optional unit pattern
         num_unit_pat = r"([\d][\d,./\-x× ]*(?:\s*(?:mm|cm|inch|nit|hz|khz|mhz|w|watt|v|vac|bit|k|°c|°f|%|rh|db|lux|lm|kg|g|m|cm|ms|fps|mbps|gbps|tb|gb|mb|px|lp/mm|cd/m2|:1|years?|months?|weeks?|days?|orders?|lakhs?|crore|usd|inr|rs\.?|nos?\.?|sets?|units?))+)"
-
-        for kv in keyword_variants:
-            try:
-                # Priority: same-line colon/dash pattern (most precise — won't bleed into next row)
-                same_line = rf"(?im)^[^\n]*{kv}[^\n]*?[:\-]\s*({num_unit_pat})[^\n]*$"
-                m = re.search(same_line, text)
-                if m:
-                    val = m.group(1).strip().strip(",.:;")
-                    if val and len(val) < 60:
-                        return val
-            except re.error:
-                pass
-
-        for kv in keyword_variants:
-            try:
-                # Fallback: label ... value within 80 chars (allows table layout)
-                pat = rf"(?i){kv}[\s\S]{{0,80}}?{num_unit_pat}"
-                m = re.search(pat, text)
-                if m:
-                    val = m.group(1).strip().strip(",.:;")
-                    if val and len(val) < 60:
-                        return val
-            except re.error:
-                pass
-
-        # ── boolean / presence detection ──────────────────────────────
-        bool_keywords = ["built-in", "built in", "provided", "yes", "available",
-                         "supported", "included", "present", "integrated", "true"]
+        bool_keywords = ["built-in", "built in", "provided", "yes", "available", "supported", "included", "present", "integrated", "true"]
         req_str = str(required_value).lower()
-        if req_str in ("true", "yes", "required", "built-in", "built in"):
-            for kv in keyword_variants:
-                try:
-                    window_pat = rf"(?i){kv}[\s\S]{{0,80}}"
-                    m = re.search(window_pat, text)
-                    if m:
-                        window = m.group(0).lower()
-                        if any(bk in window for bk in bool_keywords):
-                            return "Provided"
-                except re.error:
-                    pass
+        is_bool = req_str in ("true", "yes", "required", "built-in", "built in")
 
-        # ── table / colon pattern ─────────────────────────────────────
-        # Handles "Pixel Pitch : 1.5 mm" or "Pixel Pitch | 1.5 mm"
-        for kv in keyword_variants:
-            try:
-                pat = rf"(?i){kv}\s*[:|→\-–]\s*(.{{1,80}}?)(?:\n|$|;)"
-                m = re.search(pat, text)
-                if m:
-                    val = m.group(1).strip().strip(",.:;")
-                    if val and len(val) < 80:
-                        return val
-            except re.error:
-                pass
+        for filename, pages in vendor_pages.items():
+            for i, text in enumerate(pages):
+                for kv in keyword_variants:
+                    try:
+                        # Priority: same-line colon/dash pattern
+                        same_line = rf"(?im)^[^\n]*{kv}[^\n]*?[:\-]\s*({num_unit_pat})[^\n]*$"
+                        m = re.search(same_line, text)
+                        if m:
+                            val = m.group(1).strip().strip(",.:;")
+                            if val and len(val) < 60:
+                                start = max(0, m.start() - 150)
+                                end = min(len(text), m.end() + 150)
+                                snippet = text[start:end].replace('\n', ' ')
+                                return val, f"...{snippet}...", f"{filename} (Page {i+1})"
+                    except re.error: pass
 
-        # ── free-text / make-model extraction ─────────────────────────
-        # For specs like "Make & Model", "OS", "Diode Type" — grab the
-        # full value after the colon/label on the same line
-        for kv in keyword_variants:
-            try:
-                pat = rf"(?i){kv}\s*[:\-]?\s*(.{{3,60}})(?:\n|$)"
-                m = re.search(pat, text)
-                if m:
-                    val = m.group(1).strip().strip(",.:;")
-                    # Reject if it looks like a number we already tried above
-                    if val and len(val) >= 3 and not val[0].isdigit():
-                        return val[:60]
-            except re.error:
-                pass
+                    try:
+                        # Fallback: label ... value within 80 chars
+                        pat = rf"(?i){kv}[\s\S]{{0,80}}?{num_unit_pat}"
+                        m = re.search(pat, text)
+                        if m:
+                            val = m.group(1).strip().strip(",.:;")
+                            if val and len(val) < 60:
+                                start = max(0, m.start() - 150)
+                                end = min(len(text), m.end() + 150)
+                                snippet = text[start:end].replace('\n', ' ')
+                                return val, f"...{snippet}...", f"{filename} (Page {i+1})"
+                    except re.error: pass
 
-        return None
+                    # boolean / presence detection
+                    if is_bool:
+                        try:
+                            window_pat = rf"(?i){kv}[\s\S]{{0,80}}"
+                            m = re.search(window_pat, text)
+                            if m:
+                                window = m.group(0).lower()
+                                if any(bk in window for bk in bool_keywords):
+                                    start = max(0, m.start() - 150)
+                                    end = min(len(text), m.end() + 150)
+                                    snippet = text[start:end].replace('\n', ' ')
+                                    return "Provided", f"...{snippet}...", f"{filename} (Page {i+1})"
+                        except re.error: pass
+
+                    try:
+                        # table / colon pattern
+                        pat = rf"(?i){kv}\s*[:|→\-–]\s*(.{{1,80}}?)(?:\n|$|;)"
+                        m = re.search(pat, text)
+                        if m:
+                            val = m.group(1).strip().strip(",.:;")
+                            if val and len(val) < 80:
+                                start = max(0, m.start() - 150)
+                                end = min(len(text), m.end() + 150)
+                                snippet = text[start:end].replace('\n', ' ')
+                                return val, f"...{snippet}...", f"{filename} (Page {i+1})"
+                    except re.error: pass
+
+                    try:
+                        # free-text / make-model extraction
+                        pat = rf"(?i){kv}\s*[:\-]?\s*(.{{3,60}})(?:\n|$)"
+                        m = re.search(pat, text)
+                        if m:
+                            val = m.group(1).strip().strip(",.:;")
+                            if val and len(val) >= 3 and not val[0].isdigit():
+                                start = max(0, m.start() - 150)
+                                end = min(len(text), m.end() + 150)
+                                snippet = text[start:end].replace('\n', ' ')
+                                return val[:60], f"...{snippet}...", f"{filename} (Page {i+1})"
+                    except re.error: pass
+
+        return None, "", ""
 
     @staticmethod
     def _regex_judge_spec(provided: str, required_value: Any, unit: str) -> str:
@@ -1472,96 +1453,70 @@ class RAGAuditEngine(AuditEngine):
         # Substring match as last resort
         return "match" if req_str[:12] in prov_lower or prov_lower[:12] in req_str else "fail"
 
-    def extract_specs_batch(self, specs: List[Dict[str, Any]], vendor_text: str, mandatory: bool) -> List[SpecResult]:
-        """
-        Regex-first extraction — uses ZERO LLM tokens for specs it can find directly.
-        Only specs the regex engine cannot find are batched into ONE small LLM call.
-        This keeps total token usage well under the 6,000 TPM free-tier limit.
-        """
-        if not specs:
-            return []
-
+    def extract_specs_batch(self, specs: List[Dict[str, Any]], vendor_pages: Dict[str, List[str]], mandatory: bool) -> List[SpecResult]:
+        if not specs: return []
         results: List[Optional[SpecResult]] = [None] * len(specs)
-        unresolved_indices: List[int] = []
+        unresolved: List[int] = []
 
-        # ── PASS 1: regex extraction (no LLM, no tokens) ─────────────
-        for i, s in enumerate(specs):
-            label = s.get("label", "")
-            req_val = s.get("required_value", "")
-            unit = s.get("unit", "")
-            req_str = f"{req_val} {unit}".strip()
-
-            provided = self._regex_extract_spec(label, req_val, unit, vendor_text)
+        # 1. Regex Pass
+        for i, req in enumerate(specs):
+            lbl = req.get("label", "")
+            req_val = req.get("required_value")
+            unit = req.get("unit", "")
+            
+            provided, evidence, source = self._regex_extract_spec(lbl, req_val, unit, vendor_pages)
             if provided:
-                status = self._regex_judge_spec(provided, req_val, unit)
-                results[i] = SpecResult(param=label, required=req_str, provided=provided,
-                                        status=status, mandatory=mandatory)
+                req_str = f"{req_val} {unit}".strip() if str(req_val).lower() not in ("true", "yes", "required") else "Required"
+                results[i] = SpecResult(lbl, req_str, provided, "match", mandatory, evidence=evidence, source_file=source)
             else:
-                unresolved_indices.append(i)
+                unresolved.append(i)
 
-        # ── PASS 2: LLM for unresolved specs only (one small call) ───
-        if unresolved_indices and self.llm:
-            unresolved_specs = [specs[i] for i in unresolved_indices]
-
-            # Get relevant context via vectorstore
-            vs = self._create_vectorstore(vendor_text, "temp_vendor_search")
+        # 2. LLM Fallback
+        if unresolved and getattr(self, "llm", None):
+            unresolved_reqs = [specs[i] for i in unresolved]
+            
+            flattened_pages = {}
+            for fname, pages in vendor_pages.items():
+                for i_pg, page_text in enumerate(pages):
+                    flattened_pages[f"{fname} (Page {i_pg+1})"] = page_text
+            
+            vs = getattr(self, "_create_multi_vectorstore", lambda x, y: None)(flattened_pages, f"vendor_specs_{mandatory}")
             if vs:
                 unique_chunks = {}
-                for s in unresolved_specs:
-                    query = f"{s.get('label', '')} {s.get('param', '')}"
-                    docs = vs.similarity_search(query, k=2)
+                sources = {}
+                for req in unresolved_reqs:
+                    query = f"{req.get('label', '')} {req.get('required_value', '')} {req.get('unit', '')}"
+                    docs = vs.similarity_search(query, k=3)
                     for d in docs:
                         unique_chunks[d.page_content] = True
-                context = "\n\n".join(unique_chunks.keys())[:10000]
+                        sources[d.page_content] = d.metadata.get("source", "LLM Search")
+                context = "\n\n".join([f"[Source: {sources.get(k, 'Unknown')}]\n{k}" for k in unique_chunks.keys()])[:10000]
             else:
-                context = vendor_text[:3000]
+                context = str(vendor_pages)[:6000]
 
-            # Keep the prompt small — only send unresolved specs
-            specs_payload = json.dumps([
-                {"label": s.get("label", ""), "required_value": str(s.get("required_value", ""))}
-                for s in unresolved_specs
-            ])
-
-            prompt_text = (
-                "You are checking a vendor's technical submission. "
-                "For each spec below, extract the exact value the vendor stated in the context. "
-                "If not found, use \"[DATA LACKING]\". "
-                "Output ONLY a raw JSON array, same order as input, no explanation:\n"
-                "[{\"label\":\"...\",\"provided_value\":\"...\"}]\n\n"
-                f"Specs: {specs_payload}\n\nContext:\n{context}"
+            prompt = (
+                "Extract the following technical specifications from the context.\n"
+                f"Specs to find: {json.dumps(unresolved_reqs)}\n\nContext:\n{context}\n\n"
+                "Return a JSON array of the extracted values. If a parameter is not explicitly mentioned, return \"[DATA LACKING]\".\n"
+                "[{\"label\":\"...\", \"extracted_value\":\"...\"}]"
             )
-
-            for attempt in range(4):
+            for attempt in range(3):
                 try:
-                    response = self.llm.invoke(prompt_text).content
-                    data_list = self._extract_json(response, expected_type=list)
-                    if not isinstance(data_list, list):
-                        raise ValueError("Expected JSON list")
-                    extracted_map = {
-                        item.get("label", ""): item
-                        for item in data_list if isinstance(item, dict)
-                    }
-                    for i, s in zip(unresolved_indices, unresolved_specs):
-                        label = s.get("label", "")
-                        req_val = s.get("required_value", "")
-                        unit = s.get("unit", "")
-                        req_str = f"{req_val} {unit}".strip()
+                    resp = self.llm.invoke(prompt).content
+                    data = self._extract_json(resp, expected_type=list)
+                    ext_map = {item.get("label", ""): str(item.get("extracted_value", "[DATA LACKING]")) for item in data if isinstance(item, dict)}
+                    
+                    for i_idx, req in zip(unresolved, unresolved_reqs):
+                        lbl = req.get("label", "")
+                        req_val = req.get("required_value")
+                        unit = req.get("unit", "")
+                        req_str = f"{req_val} {unit}".strip() if str(req_val).lower() not in ("true", "yes", "required") else "Required"
                         
-                        ext = extracted_map.get(label, {})
-                        provided = ext.get("provided_value", "[DATA LACKING]")
-                        
+                        provided = ext_map.get(lbl, "[DATA LACKING]")
                         if provided != "[DATA LACKING]":
-                            status = self._regex_judge_spec(provided, req_val, unit)
+                            results[i_idx] = SpecResult(lbl, req_str, provided, "match", mandatory, evidence="Extracted via Semantic Search", source_file="LLM Semantic Search")
                         else:
-                            status = "lacking"
-                            
-                        results[i] = SpecResult(
-                            param=label,
-                            required=req_str,
-                            provided=provided,
-                            status=status,
-                            mandatory=mandatory,
-                        )
+                            results[i_idx] = SpecResult(lbl, req_str, provided, "lacking", mandatory, evidence="", source_file="")
                     break  # success — stop retrying
                 except Exception as e:
                     print(f"LLM fallback attempt {attempt+1} failed: {e}")
@@ -1574,19 +1529,14 @@ class RAGAuditEngine(AuditEngine):
                     else:
                         time.sleep(3)
 
-        # ── Fill any remaining None slots with DATA LACKING ───────────
-        for i, s in enumerate(specs):
+        # 3. Fill missing
+        for i, req in enumerate(specs):
             if results[i] is None:
-                req_val = s.get("required_value", "")
-                unit = s.get("unit", "")
-                req_str = f"{req_val} {unit}".strip()
-                results[i] = SpecResult(
-                    param=s.get("label", ""),
-                    required=req_str,
-                    provided="[DATA LACKING]",
-                    status="lacking",
-                    mandatory=mandatory,
-                )
+                lbl = req.get("label", "")
+                req_val = req.get("required_value")
+                unit = req.get("unit", "")
+                req_str = f"{req_val} {unit}".strip() if str(req_val).lower() not in ("true", "yes", "required") else "Required"
+                results[i] = SpecResult(lbl, req_str, "[DATA LACKING]", "lacking", mandatory, evidence="", source_file="")
 
         return results
 
@@ -2498,7 +2448,8 @@ def run_audit() -> None:
         placeholder.markdown(render_audit_terminal(1, f"Analyzing {name} ({i}/{len(names)})...", pct), unsafe_allow_html=True)
         files = ss.vendor_files[name]
         errors = ss.vendor_errors.get(name, {f: None for f in files})
-        results.append(engine.analyze_vendor(name, files, errors, ss.bid))
+        pages = ss.vendor_files_pages.get(name, {})
+        results.append(engine.analyze_vendor(name, files, errors, ss.bid, pages))
     
     # Step 2: Generating Ranking & Summary
     placeholder.markdown(render_audit_terminal(2, f"Analyzed {len(names)} vendor submissions.", 100.0), unsafe_allow_html=True)
@@ -4328,35 +4279,48 @@ def render_maf(r: VendorResult) -> str:
     return out
 
 
-def render_pqc(r: VendorResult) -> str:
+def render_pqc_st(r: VendorResult) -> None:
     svg = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>'
-    out = f'<div class="sh-box sh-purple">{svg}<span class="title">Pre-Qualification Criteria (PQC) Gate</span><span class="line"></span></div>'
-    rows = []
-    for p in r.pqc:
-        chip = (f'<span class="chip match">{html.escape(p.provided)}</span>' if p.passed
-                else f'<span class="chip fail">{html.escape(p.provided)} ✕</span>')
-        rows.append(f"<tr><td>{html.escape(p.label)} "
-                    f"<span style='color:var(--muted);font-size:11px;'>§{p.section}</span></td>"
-                    f"<td><span class='chip req'>{html.escape(p.required)}</span></td>"
-                    f"<td style='text-align:right;'>{chip}</td></tr>")
-    out += f'<div style="overflow-x: auto; width: 100%; -webkit-overflow-scrolling: touch;"><table class="matrix"><thead><tr><th>Criterion</th><th>Required</th><th style="text-align:right;">Vendor Provided</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
-    return out
+    st.markdown(f'<div class="sh-box sh-purple">{svg}<span class="title">Pre-Qualification Criteria (PQC) Gate</span><span class="line"></span></div>', unsafe_allow_html=True)
+    
+    for i, p in enumerate(r.pqc):
+        c1, c2, c3, c4 = st.columns([0.4, 0.25, 0.15, 0.2])
+        c1.markdown(f"<div class='doc-row' style='font-size:12.5px;'><span class='doc-name'>{html.escape(p.label)}</span></div>", unsafe_allow_html=True)
+        c2.markdown(f"<div class='doc-row'><span class='chip req' style='font-size:11.5px;'>{html.escape(p.required)}</span></div>", unsafe_allow_html=True)
+        
+        if p.passed:
+            c3.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-good' style='background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#34d399;'>FOUND</span></div>", unsafe_allow_html=True)
+            with c4:
+                st.markdown("<div class='verify-btn'>", unsafe_allow_html=True)
+                if st.button("Inspect", key=f"pqc_{r.name}_{i}_{p.label}", use_container_width=True):
+                    show_double_confirm_dialog(r.name, r, f"PQC Verification: {p.label}", p.source_file, p.evidence)
+                st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            c3.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-bad' style='background:rgba(239,68,68,0.15); border:1px solid #ef4444; color:#f87171;'>MISSING</span></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:1px; background:rgba(255,255,255,0.05); margin-bottom:4px;'></div>", unsafe_allow_html=True)
 
 
-def render_matrix(r: VendorResult) -> str:
+def render_matrix_st(r: VendorResult) -> None:
     svg = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>'
-    out = f'<div class="sh-box sh-blue">{svg}<span class="title">Technical Comparison Matrix (BID vs Vendor)</span><span class="line"></span></div>'
-    rows = []
+    st.markdown(f'<div class="sh-box sh-blue">{svg}<span class="title">Technical Comparison Matrix (BID vs Vendor)</span><span class="line"></span></div>', unsafe_allow_html=True)
+    
     for tier, specs in [("Mandatory", r.mandatory_specs), ("Preferred", r.preferred_specs)]:
-        for s in specs:
-            tier_chip = (f'<span class="chip req">{tier}</span>')
-            rows.append(
-                f"<tr><td>{html.escape(s.param)}</td>"
-                f"<td>{tier_chip}</td>"
-                f"<td><span class='chip req'>{html.escape(s.required)}</span></td>"
-                f"<td style='text-align:right;'>{spec_chip(s)}</td></tr>")
-    out += f'<div style="overflow-x: auto; width: 100%; -webkit-overflow-scrolling: touch;"><table class="matrix"><thead><tr><th>Parameter</th><th>Tier</th><th>BID Requirement</th><th style="text-align:right;">Vendor Value</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
-    return out
+        for i, s in enumerate(specs):
+            c1, c2, c3, c4, c5 = st.columns([0.3, 0.15, 0.2, 0.15, 0.2])
+            c1.markdown(f"<div class='doc-row' style='font-size:12px;'><span class='doc-name'>{html.escape(s.param)}</span></div>", unsafe_allow_html=True)
+            c2.markdown(f"<div class='doc-row'><span class='chip req' style='font-size:10px;'>{tier}</span></div>", unsafe_allow_html=True)
+            c3.markdown(f"<div class='doc-row'><span class='chip req' style='font-size:11px;'>{html.escape(s.required)}</span></div>", unsafe_allow_html=True)
+            
+            if s.status == "match":
+                c4.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-good' style='background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#34d399;'>FOUND</span></div>", unsafe_allow_html=True)
+                with c5:
+                    st.markdown("<div class='verify-btn'>", unsafe_allow_html=True)
+                    if st.button("Inspect", key=f"tech_{r.name}_{tier}_{i}_{s.param}", use_container_width=True):
+                        show_double_confirm_dialog(r.name, r, f"Tech Verification: {s.param}", s.source_file, s.evidence)
+                    st.markdown("</div>", unsafe_allow_html=True)
+            else:
+                c4.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-bad' style='background:rgba(239,68,68,0.15); border:1px solid #ef4444; color:#f87171;'>MISSING</span></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:1px; background:rgba(255,255,255,0.05); margin-bottom:4px;'></div>", unsafe_allow_html=True)
 
 
 def render_deviations(r: VendorResult) -> str:
@@ -4394,27 +4358,30 @@ def render_document_verification(results: List[VendorResult]) -> None:
     /* Expander UI Override */
     div[data-testid="stExpander"] {
         border: 1px solid rgba(148, 163, 184, 0.15) !important;
-        border-radius: 2px !important;
+        border-radius: 4px !important;
         background: rgba(15, 23, 42, 0.4) !important;
-        margin-bottom: 12px !important;
+        margin-bottom: 16px !important;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        backdrop-filter: blur(10px);
     }
     div[data-testid="stExpander"] summary {
         background: rgba(255, 255, 255, 0.02) !important;
-        border-radius: 2px !important;
+        border-radius: 4px !important;
+        padding: 12px 16px !important;
     }
     div[data-testid="stExpander"] summary p {
         font-family: 'JetBrains Mono', monospace !important;
-        font-size: 14px !important;
+        font-size: 14.5px !important;
         font-weight: 700 !important;
-        color: #60A5FA !important;
-        letter-spacing: 0.5px !important;
+        color: #E2E8F0 !important;
+        letter-spacing: 0.3px !important;
     }
     /* Button Styling */
     .verify-btn button {
         padding: 4px 10px !important;
         min-height: 28px !important;
         font-family: 'JetBrains Mono', monospace !important;
-        font-size: 12px !important;
+        font-size: 11px !important;
         font-weight: 700 !important;
         background: linear-gradient(90deg, rgba(56, 189, 248, 0.15), rgba(56, 189, 248, 0.05)) !important;
         border: 1px solid rgba(56, 189, 248, 0.3) !important;
@@ -4431,11 +4398,9 @@ def render_document_verification(results: List[VendorResult]) -> None:
         border-color: #38bdf8 !important;
         box-shadow: 0 0 15px rgba(56, 189, 248, 0.3) !important;
     }
-    /* Text Styling */
     .doc-row {
         padding: 8px 0;
         font-family: 'JetBrains Mono', monospace;
-        font-size: 13px;
         display: flex;
         align-items: center;
         min-height: 40px;
@@ -4446,23 +4411,17 @@ def render_document_verification(results: List[VendorResult]) -> None:
         letter-spacing: 0.5px;
     }
     .status-good {
-        color: #10b981;
         font-weight: 700;
-        background: rgba(16, 185, 129, 0.1);
         padding: 4px 8px;
         border-radius: 4px;
-        border: 1px solid rgba(16, 185, 129, 0.2);
         font-size: 11px;
         text-transform: uppercase;
         letter-spacing: 1px;
     }
     .status-bad {
-        color: #ef4444;
         font-weight: 700;
-        background: rgba(239, 68, 68, 0.1);
         padding: 4px 8px;
         border-radius: 4px;
-        border: 1px solid rgba(239, 68, 68, 0.2);
         font-size: 11px;
         text-transform: uppercase;
         letter-spacing: 1px;
@@ -4476,14 +4435,14 @@ def render_document_verification(results: List[VendorResult]) -> None:
             c1, c2, c3 = st.columns([0.6, 0.2, 0.2])
             c1.markdown("<div class='doc-row'><span class='doc-name'>Manufacturer's Authorization Form (MAF)</span></div>", unsafe_allow_html=True)
             if r.maf and r.maf.status != MAF_MISSING:
-                c2.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-good'>Found</span></div>", unsafe_allow_html=True)
+                c2.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-good' style='background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#34d399;'>FOUND</span></div>", unsafe_allow_html=True)
                 with c3:
                     st.markdown("<div class='verify-btn'>", unsafe_allow_html=True)
                     if st.button("Inspect", key=f"vd_maf_{r.name}", use_container_width=True):
                         show_double_confirm_dialog(r.name, r, "MAF Verification", r.maf.source_file, r.maf.evidence)
                     st.markdown("</div>", unsafe_allow_html=True)
             else:
-                c2.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-bad'>Not Given</span></div>", unsafe_allow_html=True)
+                c2.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-bad' style='background:rgba(239,68,68,0.15); border:1px solid #ef4444; color:#f87171;'>MISSING</span></div>", unsafe_allow_html=True)
                 
             st.divider()
                 
@@ -4492,51 +4451,107 @@ def render_document_verification(results: List[VendorResult]) -> None:
                 c1, c2, c3 = st.columns([0.6, 0.2, 0.2])
                 c1.markdown(f"<div class='doc-row'><span class='doc-name'>{html.escape(doc)}</span></div>", unsafe_allow_html=True)
                 if doc not in r.missing_documents:
-                    c2.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-good'>Found</span></div>", unsafe_allow_html=True)
+                    c2.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-good' style='background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#34d399;'>FOUND</span></div>", unsafe_allow_html=True)
                     with c3:
                         st.markdown("<div class='verify-btn'>", unsafe_allow_html=True)
                         if st.button(f"Inspect", key=f"vd_doc_{doc}_{r.name}", use_container_width=True):
                             show_double_confirm_dialog(r.name, r, f"Verification for {doc}", "", doc)
                         st.markdown("</div>", unsafe_allow_html=True)
                 else:
-                    c2.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-bad'>Not Given</span></div>", unsafe_allow_html=True)
+                    c2.markdown("<div class='doc-row' style='justify-content:flex-start;'><span class='status-bad' style='background:rgba(239,68,68,0.15); border:1px solid #ef4444; color:#f87171;'>MISSING</span></div>", unsafe_allow_html=True)
+
 
 def render_drawers(results: List[VendorResult]) -> None:
     ordered = sorted(results, key=lambda r: (r.disqualified, -(r.score)))
     
-    html_blocks = []
+    st.markdown("""
+    <style>
+    /* Expander UI Override */
+    div[data-testid="stExpander"] {
+        border: 1px solid rgba(148, 163, 184, 0.15) !important;
+        border-radius: 4px !important;
+        background: rgba(15, 23, 42, 0.4) !important;
+        margin-bottom: 16px !important;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        backdrop-filter: blur(10px);
+    }
+    div[data-testid="stExpander"] summary {
+        background: rgba(255, 255, 255, 0.02) !important;
+        border-radius: 4px !important;
+        padding: 12px 16px !important;
+    }
+    div[data-testid="stExpander"] summary p {
+        font-family: 'JetBrains Mono', monospace !important;
+        font-size: 14.5px !important;
+        font-weight: 700 !important;
+        color: #E2E8F0 !important;
+        letter-spacing: 0.3px !important;
+    }
+    /* Button Styling */
+    .verify-btn button {
+        padding: 4px 10px !important;
+        min-height: 28px !important;
+        font-family: 'JetBrains Mono', monospace !important;
+        font-size: 11px !important;
+        font-weight: 700 !important;
+        background: linear-gradient(90deg, rgba(56, 189, 248, 0.15), rgba(56, 189, 248, 0.05)) !important;
+        border: 1px solid rgba(56, 189, 248, 0.3) !important;
+        color: #38bdf8 !important;
+        border-radius: 2px !important;
+        box-shadow: 0 0 10px rgba(56, 189, 248, 0.1) !important;
+        text-transform: uppercase;
+        margin-top: 4px;
+        transition: all 0.2s ease !important;
+    }
+    .verify-btn button:hover {
+        background: rgba(56, 189, 248, 0.2) !important;
+        color: white !important;
+        border-color: #38bdf8 !important;
+        box-shadow: 0 0 15px rgba(56, 189, 248, 0.3) !important;
+    }
+    .doc-row {
+        padding: 8px 0;
+        font-family: 'JetBrains Mono', monospace;
+        display: flex;
+        align-items: center;
+        min-height: 40px;
+    }
+    .doc-name {
+        font-weight: 600;
+        color: #e2e8f0;
+        letter-spacing: 0.5px;
+    }
+    .status-good {
+        font-weight: 700;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    .status-bad {
+        font-weight: 700;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     for r in ordered:
-        if not r.disqualified:
-            icon_svg = '<svg style="filter: drop-shadow(0 0 6px rgba(52,211,153,0.8)); color: #34D399; margin-right:12px; vertical-align: -3px;" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>'
-        else:
-            icon_svg = '<svg style="filter: drop-shadow(0 0 6px rgba(248,113,113,0.8)); color: #F87171; margin-right:12px; vertical-align: -3px;" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>'
-            
-        rank = f"Rank {r.rank} &nbsp;·&nbsp; " if r.rank else ""
+        icon = '🔴' if r.disqualified else '🟢'
+        rank = f"Rank {r.rank} · " if r.rank else ""
+        title = f"{icon} {r.name} — {rank}{r.status} · {r.score:g}%"
         
-        inner_html = (
-            render_inventory(r) +
-            render_maf(r) +
-            render_pqc(r) +
-            render_matrix(r) +
-            render_deviations(r) +
-            render_violations(r)
-        )
-        
-        html_blocks.append(f"""<details class="glass-panel" style="margin-bottom: 16px;">
-    <summary style="font-family: 'JetBrains Mono', monospace; font-size: 14.5px; font-weight: 700; color: #E2E8F0; letter-spacing: 0.3px;">
-        <div style="display: flex; align-items: center; width: 100%;">
-            {icon_svg}
-            <span style="color: #F8FAFC; font-weight: 800;">{html.escape(r.name)}</span>
-            <span style="color: #64748B; margin: 0 12px;">—</span>
-            <span style="color: #94A3B8;">{rank}{html.escape(r.status)} &nbsp;·&nbsp; {r.score:g}%</span>
-        </div>
-    </summary>
-    <div style="padding: 20px 24px; border-top: 1px solid rgba(255,255,255,0.06);">
-        {inner_html}
-    </div>
-</details>""")
-        
-    st.markdown("".join(html_blocks), unsafe_allow_html=True)
+        with st.expander(title):
+            st.markdown(render_inventory(r), unsafe_allow_html=True)
+            st.markdown(render_maf(r), unsafe_allow_html=True)
+            render_pqc_st(r)
+            render_matrix_st(r)
+            st.markdown(render_deviations(r), unsafe_allow_html=True)
+            st.markdown(render_violations(r), unsafe_allow_html=True)
 
 
 
