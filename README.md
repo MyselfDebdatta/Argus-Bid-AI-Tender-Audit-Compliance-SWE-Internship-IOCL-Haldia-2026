@@ -117,8 +117,11 @@ Argus-Bid-AI/
 ├── requirements.txt            # Python dependencies (LangChain, ChromaDB, etc.)
 ├── render.yaml                 # Render Blueprint for 1-click cloud deployment
 ├── run.bat                     # Windows startup script for local dev
+├── ARCHITECTURE.md             # Detailed high-level system architecture
 ├── CODE_OF_CONDUCT.md          # Open Source contributor code of conduct
+├── CONTRIBUTING.md             # Guidelines for contributing to the project
 ├── LICENSE                     # MIT License
+├── SECURITY.md                 # Security policies and reporting instructions
 ├── .gitignore                  # Ignored files, local caches, and environments
 └── README.md                   # Project documentation
 ```
