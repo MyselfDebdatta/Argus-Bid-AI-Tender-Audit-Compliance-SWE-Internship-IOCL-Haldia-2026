@@ -1156,8 +1156,8 @@ class RAGAuditEngine(AuditEngine):
             prompt = (
                 "Check the vendor's pre-qualification criteria in the context.\n"
                 f"Criteria: {specs_json}\n\nContext:\n{context}\n\n"
-                "Return ONLY a JSON array extracting the exact value provided. If not found, use \"[NOT FOUND]\":\n"
-                "[{\"label\":\"...\",\"provided_value\":\"...\"}]"
+                "Return ONLY a JSON array extracting the exact value provided. If found, also provide the exact snippet from the text as evidence, and the exact Source tag where you found it. If not found, use \"[NOT FOUND]\":\n"
+                "[{\"label\":\"...\",\"provided_value\":\"...\", \"evidence\":\"...\", \"source_file\":\"...\"}]"
             )
             for attempt in range(3):
                 try:
@@ -1178,7 +1178,8 @@ class RAGAuditEngine(AuditEngine):
                             results.append(PQCResult(
                                 label=label, required=req_str, provided=provided,
                                 passed=True, section=req.get("section", ""),
-                                evidence="LLM Vector Search confirmed presence.", source_file="LLM Semantic Search"
+                                evidence=ext.get("evidence", "LLM Vector Search confirmed presence."),
+                                source_file=ext.get("source_file", "LLM Semantic Search")
                             ))
                             unresolved_reqs.remove(req)
                     break
@@ -1539,24 +1540,30 @@ class RAGAuditEngine(AuditEngine):
             prompt = (
                 "Extract the following technical specifications from the context.\n"
                 f"Specs to find: {json.dumps(unresolved_reqs)}\n\nContext:\n{context}\n\n"
-                "Return a JSON array of the extracted values. If a parameter is not explicitly mentioned, return \"[DATA LACKING]\".\n"
-                "[{\"label\":\"...\", \"extracted_value\":\"...\"}]"
+                "Return a JSON array of the extracted values. If a parameter is not explicitly mentioned, return \"[DATA LACKING]\". Include the exact snippet as evidence and the Source tag where you found it:\n"
+                "[{\"label\":\"...\", \"extracted_value\":\"...\", \"evidence\":\"...\", \"source_file\":\"...\"}]"
             )
             for attempt in range(3):
                 try:
                     resp = self.llm.invoke(prompt).content
                     data = self._extract_json(resp, expected_type=list)
-                    ext_map = {item.get("label", ""): str(item.get("extracted_value", "[DATA LACKING]")) for item in data if isinstance(item, dict)}
+                    ext_map = {item.get("label", ""): item for item in data if isinstance(item, dict)}
                     
                     for i_idx, req in zip(unresolved, unresolved_reqs):
                         lbl = req.get("label", "")
+                        ext = ext_map.get(lbl, {})
+                        provided = str(ext.get("extracted_value", "[DATA LACKING]"))
+                        
                         req_val = req.get("required_value")
                         unit = req.get("unit", "")
                         req_str = f"{req_val} {unit}".strip() if str(req_val).lower() not in ("true", "yes", "required") else "Required"
                         
-                        provided = ext_map.get(lbl, "[DATA LACKING]")
+                        evidence = ext.get("evidence", "Extracted via LLM Semantic Search.")
+                        source = ext.get("source_file", "LLM Semantic Search")
+                        
                         if provided != "[DATA LACKING]":
-                            results[i_idx] = SpecResult(lbl, req_str, provided, "match", mandatory, evidence="Extracted via Semantic Search", source_file="LLM Semantic Search")
+                            judgement = self._regex_judge_spec(provided, req_val, unit)
+                            results[i_idx] = SpecResult(lbl, req_str, provided, judgement, mandatory, evidence=evidence, source_file=source)
                         else:
                             results[i_idx] = SpecResult(lbl, req_str, provided, "lacking", mandatory, evidence="", source_file="")
                     break  # success — stop retrying
