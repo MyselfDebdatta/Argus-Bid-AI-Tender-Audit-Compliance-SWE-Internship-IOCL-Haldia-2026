@@ -1037,16 +1037,15 @@ class RAGAuditEngine(AuditEngine):
                 for i, page_text in enumerate(pages):
                     for pat in patterns:
                         try:
-                            m = re.search(pat, page_text)
-                            if m:
+                            for m in re.finditer(pat, page_text):
                                 val = m.group(1).strip() if m.groups() else m.group(0).strip()
-                                start = max(0, m.start() - 150)
-                                end = min(len(page_text), m.end() + 150)
-                                snippet = page_text[start:end].replace('\n', ' ')
-                                return val, f"...{snippet}...", f"{filename} (Page {i+1})"
+                                if AuditEngine._regex_judge_pqc(val, threshold, unit):
+                                    start = max(0, m.start() - 150)
+                                    end = min(len(page_text), m.end() + 150)
+                                    snippet = page_text[start:end].replace('\n', ' ')
+                                    return val, f"...{snippet}...", f"{filename} (Page {i+1})"
                         except re.error:
                             pass
-                            
         # Ultimate presence fallback
         req_nums = re.findall(r"\d+(?:\.\d+)?", str(threshold))
         if req_nums:
@@ -1509,7 +1508,8 @@ class RAGAuditEngine(AuditEngine):
             provided, evidence, source = self._regex_extract_spec(lbl, req_val, unit, vendor_pages)
             if provided:
                 req_str = f"{req_val} {unit}".strip() if str(req_val).lower() not in ("true", "yes", "required") else "Required"
-                results[i] = SpecResult(lbl, req_str, provided, "match", mandatory, evidence=evidence, source_file=source)
+                judgement = self._regex_judge_spec(provided, req_val, unit)
+                results[i] = SpecResult(lbl, req_str, provided, judgement, mandatory, evidence=evidence, source_file=source)
             else:
                 unresolved.append(i)
 
