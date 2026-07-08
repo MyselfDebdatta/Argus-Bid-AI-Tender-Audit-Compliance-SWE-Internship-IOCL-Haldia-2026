@@ -1060,7 +1060,18 @@ class RAGAuditEngine(AuditEngine):
                         window_pat = rf"(?i)({lbl_pat})[\s\S]{{0,250}}"
                         for m in re.finditer(window_pat, page_text):
                             window = m.group(0).lower()
-                            if all(num in window for num in req_nums):
+                            
+                            match_all = True
+                            for num in req_nums:
+                                if num in window or num.replace(",", "") in window.replace(",", ""):
+                                    continue
+                                core = num.replace(".", "").replace(",", "").rstrip("0")
+                                if len(core) >= 2 and core in re.sub(r"[.,\s]", "", window):
+                                    continue
+                                match_all = False
+                                break
+                                
+                            if match_all:
                                 start = max(0, m.start() - 150)
                                 end = min(len(page_text), m.end() + 150)
                                 snippet = page_text[start:end].replace('\n', ' ')
@@ -1414,7 +1425,18 @@ class RAGAuditEngine(AuditEngine):
                             m = re.search(window_pat, text)
                             if m:
                                 window = m.group(0).lower()
-                                if all(num in window for num in req_nums):
+                                
+                                match_all = True
+                                for num in req_nums:
+                                    if num in window or num.replace(",", "") in window.replace(",", ""):
+                                        continue
+                                    core = num.replace(".", "").replace(",", "").rstrip("0")
+                                    if len(core) >= 2 and core in re.sub(r"[.,\s]", "", window):
+                                        continue
+                                    match_all = False
+                                    break
+                                    
+                                if match_all:
                                     start = max(0, m.start() - 150)
                                     end = min(len(text), m.end() + 150)
                                     snippet = text[start:end].replace('\n', ' ')
